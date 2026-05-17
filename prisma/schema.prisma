@@ -1,0 +1,104 @@
+// OTA-AMP Data Model
+// 對應計畫書 §3 功能模組：人員、考勤、任務字典、派單紀錄
+// 本地 preview 用 SQLite，enum 改 String + TS shim (src/types/db-enums.ts)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  code      String   @unique  // TeamCode
+  name      String
+  weight    Float
+  staff     Staff[]
+}
+
+model Staff {
+  id                  String   @id @default(cuid())
+  staffNo             String   @unique
+  name                String
+  role                String   // Role
+  teamId              String?
+  team                Team?    @relation(fields: [teamId], references: [id])
+  active              Boolean  @default(true)
+  canManageAttendance Boolean  @default(false)
+  defaultStatus       String   @default("PRESENT")  // AttendanceStatus 預設值 (無當日紀錄時 fallback)
+
+  attendances Attendance[]
+  assignmentsAsTherapist Assignment[] @relation("TherapistAssignments")
+  assignmentsAsAssistant Assignment[] @relation("AssistantAssignments")
+
+  @@index([role])
+  @@index([teamId])
+}
+
+model Attendance {
+  id        String   @id @default(cuid())
+  date      DateTime
+  staffId   String
+  staff     Staff    @relation(fields: [staffId], references: [id])
+  status    String   // AttendanceStatus
+  note      String?
+
+  @@unique([date, staffId])
+  @@index([date])
+}
+
+model TaskDictionary {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  name        String
+  category    String       // TaskCategory
+  score       Float
+  remark      String?
+  active      Boolean      @default(true)
+
+  assignments Assignment[]
+}
+
+model Assignment {
+  id            String    @id @default(cuid())
+  date          DateTime
+  slot          String    // SlotCode
+  pool          String    // SessionPool
+
+  // 治療師: FK 或自由文字 (新流程允許未登錄的治療師)
+  therapistId   String?
+  therapist     Staff?    @relation("TherapistAssignments", fields: [therapistId], references: [id])
+  therapistName String?
+
+  // 助理: nullable — S1 task 可先 pending 等批次分派；S2-S5 自動分配時必填
+  assistantId   String?
+  assistant     Staff?    @relation("AssistantAssignments", fields: [assistantId], references: [id])
+
+  // 任務內容: 預定字典 (舊) 或自由文字 (新)
+  taskId        String?
+  task          TaskDictionary?  @relation(fields: [taskId], references: [id])
+  content       String?       // free text 任務描述
+  score         Float    @default(1)  // computeScore(): MoCA=2，其他=1
+  supportTeam   String?       // S2-S5 自動分配的支援 team
+
+  // 病人資訊
+  ward          String
+  cluster       String?       // 自 ward 推導；無法推導時 null
+  initial       String?       // 姓名首字母
+  hnPrefix      String?       // HN no. 前 4 碼
+  patientName   String?
+
+  wasOverQuota  Boolean   @default(false)
+
+  status        String    @default("PENDING")
+  note          String?       // 助理記錄的備註
+  createdAt     DateTime  @default(now())
+  dispatchedAt  DateTime?     // 何時被分派給助理 (null = pending)
+
+  @@index([date, slot])
+  @@index([assistantId, date])
+  @@index([therapistId, date])
+}
