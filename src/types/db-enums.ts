@@ -28,6 +28,33 @@ export const TEAM_LABEL: Record<TeamCode, string> = {
 
 export const TEAM_ORDER: TeamCode[] = ["NS", "STROKE", "SURGICAL", "ORTHO", "PEDS"];
 
+export const S1Specialty = {
+  MEDICAL: "Medical",
+  NS: "NS",
+  SURGICAL: "Surgical",
+  ORTHO: "Ortho",
+  STROKE: "Stroke",
+  PAEDI: "Paedi",
+} as const;
+export type S1Specialty = typeof S1Specialty[keyof typeof S1Specialty];
+
+export const S1_SPECIALTY_OPTIONS: S1Specialty[] = [
+  S1Specialty.MEDICAL,
+  S1Specialty.NS,
+  S1Specialty.SURGICAL,
+  S1Specialty.ORTHO,
+  S1Specialty.STROKE,
+  S1Specialty.PAEDI,
+];
+
+export const S1_SPECIALTY_TEAM: Partial<Record<S1Specialty, TeamCode>> = {
+  NS: TeamCode.NS,
+  Surgical: TeamCode.SURGICAL,
+  Ortho: TeamCode.ORTHO,
+  Stroke: TeamCode.STROKE,
+  Paedi: TeamCode.PEDS,
+};
+
 export const AttendanceStatus = {
   PRESENT: "PRESENT",
   LEAVE: "LEAVE",

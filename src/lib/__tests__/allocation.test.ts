@@ -21,13 +21,23 @@ import {
 // parseWard
 // ─────────────────────────────────────────────
 describe("parseWard", () => {
-  it("parses floor + room + cluster", () => {
+  it("parses cluster letter + floor number", () => {
+    expect(parseWard("E8")).toEqual({ raw: "E8", floor: 8, room: "E", cluster: "CLUSTER_2" });
+    expect(parseWard("A12")).toEqual({ raw: "A12", floor: 12, room: "A", cluster: "CLUSTER_1" });
+  });
+
+  it("ignores bed number suffix", () => {
+    expect(parseWard("E8/19")).toEqual({ raw: "E8/19", floor: 8, room: "E", cluster: "CLUSTER_2" });
+    expect(compareWardProximity(parseWard("E8/19"), parseWard("E8/42"))).toBe(LocationTier.SAME_FLOOR_SAME_CLUSTER);
+  });
+
+  it("still accepts legacy floor + room format", () => {
     expect(parseWard("3A")).toEqual({ raw: "3A", floor: 3, room: "A", cluster: "CLUSTER_1" });
     expect(parseWard("12E")).toEqual({ raw: "12E", floor: 12, room: "E", cluster: "CLUSTER_2" });
   });
 
   it("accepts lowercase and uppercases", () => {
-    expect(parseWard("3a").room).toBe("A");
+    expect(parseWard("e8").room).toBe("E");
   });
 
   it("Cluster 1 = A-D, Cluster 2 = E-H", () => {
@@ -603,6 +613,39 @@ describe("dispatchTasksByLocation", () => {
       ]
     );
     expect(result[0].assistantId).toBe("cluster1");
+  });
+
+  it("specialty task prioritizes matching team before location", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "3A", score: 1, specialty: "Stroke" }],
+      [
+        { id: "nearby", homeTeam: "NS", currentWards: ["3B"], currentScore: 0 },
+        { id: "stroke", homeTeam: "STROKE", currentWards: ["8E"], currentScore: 0 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("stroke");
+  });
+
+  it("NS specialty prioritizes NS team before location", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "3A", score: 1, specialty: "NS" }],
+      [
+        { id: "nearby", homeTeam: "STROKE", currentWards: ["3B"], currentScore: 0 },
+        { id: "ns", homeTeam: "NS", currentWards: ["8E"], currentScore: 0 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("ns");
+  });
+
+  it("medical task keeps normal location priority", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "3A", score: 1, specialty: "Medical" }],
+      [
+        { id: "nearby", homeTeam: "NS", currentWards: ["3B"], currentScore: 0 },
+        { id: "stroke", homeTeam: "STROKE", currentWards: ["8E"], currentScore: 0 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("nearby");
   });
 
   it("load balancing: same tier, lower score assistant gets priority", () => {

@@ -3,6 +3,7 @@
 // AM = S2 + S3 (2 slots each), PM = S4 + S5 (2 slots each)
 
 // Type-only imports — allocation.ts avoids importing @prisma/client runtime values for easier unit testing
+import { S1_SPECIALTY_TEAM, type S1Specialty } from "@/types/db-enums";
 import type { TeamCode, SessionPool, WardCluster, SlotCode } from "@/types/db-enums";
 
 export const TEAM_WEIGHTS: Record<TeamCode, number> = {
@@ -116,13 +117,14 @@ export function checkRemainingQuota(
 // ─────────────────────────────────────────────
 // §2.4 Location optimization recommendation — three-tier priority
 //
-// Ward ID rules: floor number + room letter, e.g. "3A" → floor=3, room='A'
+// Ward ID rules: cluster letter + floor number, e.g. "E8/19" → floor=8, room='E'.
+// Bed number suffix does not affect distribution. Legacy "8E" is still accepted.
 // Cluster 1 (West Wing): A,B,C,D ; Cluster 2 (East Wing): E,F,G,H
 //
 // Priority tiers (lower number = higher priority):
-//   Tier 1 — Same floor, same cluster (best, e.g. assistant at 3A, new task 3B)
-//   Tier 2 — Vertical adjacent (2nd best, e.g. assistant at 3A, new task 4A — same room, different floor)
-//   Tier 3 — Same cluster, different floor (e.g. assistant at 3A, new task 4D)
+//   Tier 1 — Same floor, same cluster (best, e.g. assistant at E8, new task F8)
+//   Tier 2 — Vertical adjacent (2nd best, e.g. assistant at E8, new task E9 — same room, different floor)
+//   Tier 3 — Same cluster, different floor (e.g. assistant at E8, new task H9)
 //   Tier 4 — Cross cluster (lowest, no transport score but visual hint)
 // ─────────────────────────────────────────────
 
@@ -138,15 +140,24 @@ const CLUSTER_2_ROOMS = new Set(["E", "F", "G", "H"]);
 
 /**
  * Parse ward ID into floor + room + cluster.
- * Accepts "3A", "12E", "3a" etc.
+ * Accepts "E8", "E8/19", "e8", and legacy "8E".
  */
 export function parseWard(wardId: string): ParsedWard {
-  const match = wardId.trim().match(/^(\d+)\s*([A-Za-z])$/);
-  if (!match) {
-    throw new Error(`Invalid ward id: "${wardId}" (expected e.g. "3A")`);
+  const value = wardId.trim();
+  const letterFirst = value.match(/^([A-Za-z])\s*(\d+)/);
+  const legacyFloorFirst = value.match(/^(\d+)\s*([A-Za-z])/);
+
+  let floor: number;
+  let room: string;
+  if (letterFirst) {
+    room = letterFirst[1].toUpperCase();
+    floor = parseInt(letterFirst[2], 10);
+  } else if (legacyFloorFirst) {
+    floor = parseInt(legacyFloorFirst[1], 10);
+    room = legacyFloorFirst[2].toUpperCase();
+  } else {
+    throw new Error(`Invalid ward id: "${wardId}" (expected e.g. "E8" or "E8/19")`);
   }
-  const floor = parseInt(match[1], 10);
-  const room = match[2].toUpperCase();
 
   let cluster: WardCluster;
   if (CLUSTER_1_ROOMS.has(room)) cluster = "CLUSTER_1";
@@ -259,12 +270,14 @@ export interface PendingTask {
   id: string;
   ward: string;
   score: number;
+  specialty?: S1Specialty | string | null;
 }
 
 export interface DispatchCandidate {
   id: string;
   currentWards: string[];
   currentScore: number;
+  homeTeam?: TeamCode | null;
 }
 
 export function dispatchTasksByLocation(
@@ -284,6 +297,10 @@ export function dispatchTasksByLocation(
   for (const task of sorted) {
     let target: ParsedWard | null = null;
     try { target = parseWard(task.ward); } catch { /* unparseable → all tier 4 */ }
+    const preferredTeam = S1_SPECIALTY_TEAM[task.specialty as S1Specialty];
+    const hasPreferredTeamOnDuty = preferredTeam
+      ? candidates.some((c) => c.homeTeam === preferredTeam)
+      : false;
 
     const ranked = candidates
       .map((c) => {
@@ -297,9 +314,10 @@ export function dispatchTasksByLocation(
             } catch { /* skip */ }
           }
         }
-        return { id: c.id, tier, score: score.get(c.id)! };
+        const specialtyRank = hasPreferredTeamOnDuty && c.homeTeam !== preferredTeam ? 1 : 0;
+        return { id: c.id, tier, score: score.get(c.id)!, specialtyRank };
       })
-      .sort((a, b) => a.tier - b.tier || a.score - b.score);
+      .sort((a, b) => a.specialtyRank - b.specialtyRank || a.tier - b.tier || a.score - b.score);
 
     const winner = ranked[0];
     result.push({ taskId: task.id, assistantId: winner.id });

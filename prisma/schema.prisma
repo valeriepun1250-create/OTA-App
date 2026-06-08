@@ -83,6 +83,7 @@ model Assignment {
   content       String?       // free text 任務描述
   score         Float    @default(1)  // computeScore(): MoCA=2，其他=1
   supportTeam   String?       // S2-S5 自動分配的支援 team
+  specialty     String?       // S1 specialty: Medical/Surgical/Ortho/Stroke/Paedi
 
   // 病人資訊
   ward          String

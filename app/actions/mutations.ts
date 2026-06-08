@@ -3,8 +3,11 @@
 import { prisma } from "@/lib/prisma";
 import {
   SLOT_TO_POOL,
+  encodeAttendanceNote,
   encodeUnavailableSlots,
   isAvailableForSlot,
+  type LeaveDuration,
+  type LeaveType,
   parseUnavailableSlots,
 } from "@/lib/attendance";
 import {
@@ -14,12 +17,53 @@ import {
   dispatchTasksByLocation,
 } from "@/lib/allocation";
 import { getCurrentUser, getTeamWeights } from "./queries";
-import { TEAM_ORDER, type TeamCode } from "@/types/db-enums";
+import { S1_SPECIALTY_OPTIONS, TEAM_ORDER, type S1Specialty, type TeamCode } from "@/types/db-enums";
 import { AssignmentStatus, AttendanceStatus, Role, type SlotCode } from "@/types/db-enums";
 import { revalidatePath } from "next/cache";
 
 function toDate(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00.000Z`);
+}
+
+function formatDateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function isWeekday(date: Date): boolean {
+  const day = date.getUTCDay();
+  return day >= 1 && day <= 5;
+}
+
+function normalizeS1Specialty(input: string | null | undefined): S1Specialty {
+  const value = input?.trim().toLowerCase();
+  if (!value) return "Medical";
+  return (
+    S1_SPECIALTY_OPTIONS.find((option) => option.toLowerCase() === value) ??
+    "Medical"
+  );
+}
+
+function statusForLeaveDuration(duration: LeaveDuration): AttendanceStatus {
+  if (duration === "FULL_DAY") return AttendanceStatus.LEAVE;
+  if (duration === "AM") return AttendanceStatus.PM_ONLY;
+  if (duration === "PM") return AttendanceStatus.AM_ONLY;
+  return AttendanceStatus.OTHER;
+}
+
+function unavailableSlotsForLeaveDuration(
+  duration: LeaveDuration,
+  customSlots: SlotCode[] = []
+): SlotCode[] {
+  if (duration === "FULL_DAY") return ["S1", "S2", "S3", "S4", "S5"];
+  if (duration === "AM") return ["S1", "S2", "S3"];
+  if (duration === "PM") return ["S4", "S5"];
+  return customSlots;
 }
 
 async function requireManageAttendance() {
@@ -47,8 +91,15 @@ export async function setAttendance(args: {
     create: { date, staffId: args.staffId, status: args.status, note },
     update: { status: args.status, note },
   });
+  const existingGeneratedRows = await prisma.assignment.count({
+    where: { date, slot: { in: ["S2", "S3", "S4", "S5"] } },
+  });
+  if (existingGeneratedRows > 0) {
+    await writeAutoScheduleForDate(args.dateStr);
+  }
   revalidatePath("/assign");
   revalidatePath("/attendance");
+  revalidatePath("/calendar");
 }
 
 /** Batch submit entire daily attendance (attendance page "Submit") */
@@ -70,9 +121,74 @@ export async function setAttendanceBatch(args: {
       });
     })
   );
+  const existingGeneratedRows = await prisma.assignment.count({
+    where: { date, slot: { in: ["S2", "S3", "S4", "S5"] } },
+  });
+  if (existingGeneratedRows > 0) {
+    await writeAutoScheduleForDate(args.dateStr);
+  }
   revalidatePath("/assign");
   revalidatePath("/attendance");
+  revalidatePath("/calendar");
   return { count: args.updates.length };
+}
+
+export async function setCalendarLeave(args: {
+  dateStr: string;
+  endDateStr?: string;
+  staffId: string;
+  leaveType: LeaveType;
+  duration: LeaveDuration;
+  unavailableSlots?: SlotCode[];
+}) {
+  await requireManageAttendance();
+  const start = toDate(args.dateStr);
+  const end = args.endDateStr ? toDate(args.endDateStr) : start;
+  const unavailableSlots = unavailableSlotsForLeaveDuration(args.duration, args.unavailableSlots);
+  const dates: Date[] = [];
+  for (let d = new Date(start); d <= end; d = addDays(d, 1)) {
+    dates.push(new Date(d));
+  }
+
+  await prisma.$transaction(
+    dates.map((date) =>
+      prisma.attendance.upsert({
+        where: { date_staffId: { date, staffId: args.staffId } },
+        create: {
+          date,
+          staffId: args.staffId,
+          status: statusForLeaveDuration(args.duration),
+          note: encodeAttendanceNote({
+            unavailableSlots,
+            leaveType: args.leaveType,
+            leaveDuration: args.duration,
+          }),
+        },
+        update: {
+          status: statusForLeaveDuration(args.duration),
+          note: encodeAttendanceNote({
+            unavailableSlots,
+            leaveType: args.leaveType,
+            leaveDuration: args.duration,
+          }),
+        },
+      })
+    )
+  );
+
+  for (const date of dates) {
+    const existingGeneratedRows = await prisma.assignment.count({
+      where: { date, slot: { in: ["S2", "S3", "S4", "S5"] } },
+    });
+    if (existingGeneratedRows > 0) {
+      await writeAutoScheduleForDate(formatDateKey(date));
+    }
+  }
+
+  revalidatePath("/calendar");
+  revalidatePath("/attendance");
+  revalidatePath("/assign");
+  revalidatePath(`/assistant/${args.staffId}`);
 }
 
 /** 8:45 batch dispatch cutoff time (HH:mm) */
@@ -90,9 +206,22 @@ export async function createTaskRequest(args: {
   initial?: string;
   hnPrefix?: string;
   therapistName?: string;
+  specialty?: string;
   content: string;
 }) {
+  if (
+    !args.ward.trim() ||
+    !args.initial?.trim() ||
+    !args.hnPrefix?.trim() ||
+    !args.therapistName?.trim() ||
+    !args.specialty?.trim() ||
+    !args.content.trim()
+  ) {
+    throw new Error("All New Task fields are required");
+  }
+
   const score = computeScore(args.content);
+  const specialty = normalizeS1Specialty(args.specialty);
   let cluster: string | null = null;
   try { cluster = parseWard(args.ward).cluster; } catch { /* parse failed */ }
 
@@ -103,6 +232,7 @@ export async function createTaskRequest(args: {
       pool: SLOT_TO_POOL["S1"],
       content: args.content,
       score,
+      specialty,
       therapistName: args.therapistName,
       initial: args.initial,
       hnPrefix: args.hnPrefix,
@@ -141,6 +271,7 @@ export async function dispatchPendingTasks(dateStr: string) {
   // 2. Fetch today's S1 assistants on duty + existing task accumulation
   const assistants = await prisma.staff.findMany({
     where: { role: "ASSISTANT", active: true },
+    include: { team: true },
   });
   const attendances = await prisma.attendance.findMany({
     where: { date, staffId: { in: assistants.map((a) => a.id) } },
@@ -168,6 +299,7 @@ export async function dispatchPendingTasks(dateStr: string) {
     const own = existing.filter((t) => t.assistantId === a.id);
     return {
       id: a.id,
+      homeTeam: (a.team?.code ?? null) as TeamCode | null,
       currentWards: own.map((t) => t.ward),
       currentScore: own.reduce((s, t) => s + (t.score ?? 1), 0),
     };
@@ -175,7 +307,7 @@ export async function dispatchPendingTasks(dateStr: string) {
 
   // 3. Run algorithm
   const plan = dispatchTasksByLocation(
-    pending.map((p) => ({ id: p.id, ward: p.ward, score: p.score })),
+    pending.map((p) => ({ id: p.id, ward: p.ward, score: p.score, specialty: p.specialty })),
     candidates
   );
 
@@ -209,6 +341,10 @@ export async function dispatchPendingTasks(dateStr: string) {
  */
 export async function generateAutoSchedule(dateStr: string) {
   await requireManageAttendance();
+  return writeAutoScheduleForDate(dateStr);
+}
+
+async function writeAutoScheduleForDate(dateStr: string) {
   const date = toDate(dateStr);
 
   // 1. Assistants + attendance
@@ -287,10 +423,30 @@ export async function generateAutoSchedule(dateStr: string) {
   ]);
 
   revalidatePath("/assign");
+  revalidatePath("/calendar");
   // Notify all assistant pages
   for (const a of assistants) revalidatePath(`/assistant/${a.id}`);
 
   return { count: allocations.length };
+}
+
+export async function generateMonthlyAutoSchedule(monthStr: string) {
+  await requireManageAttendance();
+  const [year, month] = monthStr.split("-").map(Number);
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  let days = 0;
+  let assignments = 0;
+
+  for (let d = new Date(start); d < end; d = addDays(d, 1)) {
+    if (!isWeekday(d)) continue;
+    const result = await writeAutoScheduleForDate(formatDateKey(d));
+    days++;
+    assignments += result.count;
+  }
+
+  revalidatePath("/calendar");
+  return { days, assignments };
 }
 
 // ─────────────────────────────────────────────

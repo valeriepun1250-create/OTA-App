@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getAssistantDailySchedule } from "@/app/actions/queries";
+import { getAssistantDailySchedule, getAssistantWeeklySchedule } from "@/app/actions/queries";
 import { AssignmentStatusToggle } from "@/components/AssignmentStatusToggle";
 import { TaskNoteField } from "@/components/TaskNoteField";
 import { TEAM_LABEL, type SlotCode, type TeamCode } from "@/types/db-enums";
@@ -16,6 +16,15 @@ const SLOT_TIME: Record<SlotCode, string> = {
   S5: "15:15 – 17:00",
 };
 
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+
+function mondayOf(dateStr: string) {
+  const date = new Date(`${dateStr}T00:00:00.000Z`);
+  const offset = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - offset);
+  return date.toISOString().slice(0, 10);
+}
+
 export default async function AssistantDashboard({
   params,
   searchParams,
@@ -26,8 +35,12 @@ export default async function AssistantDashboard({
   const dateStr = searchParams.date ?? getTodayInHongKong();
 
   let data;
+  let weekly;
   try {
-    data = await getAssistantDailySchedule(params.id, dateStr);
+    [data, weekly] = await Promise.all([
+      getAssistantDailySchedule(params.id, dateStr),
+      getAssistantWeeklySchedule(params.id, mondayOf(dateStr)),
+    ]);
   } catch {
     notFound();
   }
@@ -75,6 +88,7 @@ export default async function AssistantDashboard({
                       Ward {t.ward}
                       {t.initial && <> · {t.initial}</>}
                       {t.hnPrefix && <> · HN {t.hnPrefix}</>}
+                      <> · {t.specialty ?? "Medical"}</>
                       <> · {t.score ?? 1} pts</>
                     </div>
                     {t.therapistName && <div className="mt-0.5 text-sm text-slate-400">by {t.therapistName}</div>}
@@ -114,6 +128,59 @@ export default async function AssistantDashboard({
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="mt-6">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <h2 className="text-lg font-semibold">Weekly Schedule</h2>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-sm text-slate-500">{mondayOf(dateStr)} to {weekly.days[4]?.date}</span>
+            <span className="badge bg-emerald-100 text-emerald-800">Home team</span>
+            <span className="badge bg-slate-100 text-slate-700">Cross-team</span>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-5">
+          {weekly.days.map((day, index) => {
+            const isLeave = day.leave && day.leave.status !== "PRESENT";
+            return (
+              <div key={day.date} className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-slate-400">
+                      {WEEKDAY_LABELS[index]}
+                    </div>
+                    <div className="font-mono text-sm font-semibold">{day.date.slice(5)}</div>
+                  </div>
+                  {isLeave && <span className="badge bg-rose-100 text-rose-700">Leave</span>}
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  {(["S2", "S3", "S4", "S5"] as SlotCode[]).map((slot) => {
+                    const assignment = day.assignments.find((a) => a.slot === slot);
+                    const isHomeTeam =
+                      !!assignment?.supportTeam && assignment.supportTeam === assistant.team;
+                    return (
+                      <div
+                        key={slot}
+                        className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs ${
+                          assignment
+                            ? isHomeTeam
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-slate-100 text-slate-700"
+                            : "bg-slate-50 text-slate-400"
+                        }`}
+                      >
+                        <span className="font-mono font-semibold">{slot}</span>
+                        <span className="truncate font-semibold">
+                          {assignment?.supportTeam ? TEAM_LABEL[assignment.supportTeam as TeamCode] : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </section>
     </main>
   );

@@ -182,6 +182,9 @@ export function AttendanceForm({
           <div>
             <p className="badge bg-amber-100 text-amber-800">Manpower Setup</p>
             <h1 className="mt-3 text-2xl font-bold sm:text-3xl">Attendance Management</h1>
+            <p className="muted mt-2 text-sm">
+              Urgent leave changes here update the calendar and overwrite this day's generated roster only.
+            </p>
           </div>
           <button onClick={() => router.push("/")} className="btn btn-secondary">
             ← Home

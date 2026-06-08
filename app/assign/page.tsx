@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { Suspense, useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -14,7 +14,7 @@ import {
   dispatchPendingTasks,
   generateAutoSchedule,
 } from "@/app/actions/mutations";
-import { TEAM_LABEL, TEAM_ORDER, type TeamCode } from "@/types/db-enums";
+import { S1_SPECIALTY_OPTIONS, TEAM_LABEL, TEAM_ORDER, type TeamCode } from "@/types/db-enums";
 import type { TeamPoolQuota } from "@/lib/allocation";
 import { getTodayInHongKong } from "@/lib/date";
 
@@ -38,6 +38,7 @@ interface TaskRow {
   initial: string | null;
   hnPrefix: string | null;
   therapistName: string | null;
+  specialty: string | null;
   content: string | null;
   score: number;
   status: string;
@@ -48,6 +49,14 @@ interface TaskRow {
 }
 
 export default function AssignPage() {
+  return (
+    <Suspense fallback={<AssignPageSkeleton />}>
+      <AssignPageContent />
+    </Suspense>
+  );
+}
+
+function AssignPageContent() {
   const searchParams = useSearchParams();
   const today = getTodayInHongKong();
   const [dateStr, setDateStr] = useState(searchParams.get("date") ?? today);
@@ -72,11 +81,19 @@ export default function AssignPage() {
     initial: "",
     hnPrefix: "",
     therapistName: "",
+    specialty: "Medical",
     content: "",
   });
 
   const isS1 = mode === "S1";
   const pendingCount = tasks.filter((t) => t.isPending).length;
+  const isTaskFormComplete =
+    !!form.ward.trim() &&
+    !!form.initial.trim() &&
+    !!form.hnPrefix.trim() &&
+    !!form.therapistName.trim() &&
+    !!form.specialty.trim() &&
+    !!form.content.trim();
 
   const refreshS1 = () => {
     startTransition(async () => {
@@ -107,7 +124,7 @@ export default function AssignPage() {
   }, [dateStr, mode]);
 
   const handleAddTask = () => {
-    if (!form.ward.trim() || !form.content.trim()) return;
+    if (!isTaskFormComplete) return;
     startTransition(async () => {
       await createTaskRequest({
         dateStr,
@@ -115,6 +132,7 @@ export default function AssignPage() {
         initial: form.initial.trim() || undefined,
         hnPrefix: form.hnPrefix.trim() || undefined,
         therapistName: form.therapistName.trim() || undefined,
+        specialty: form.specialty.trim() || undefined,
         content: form.content.trim(),
       });
       setForm((f) => ({ ...f, ward: "", initial: "", hnPrefix: "", content: "" }));
@@ -181,7 +199,7 @@ export default function AssignPage() {
         {isS1 ? (
           <>
             <strong>S1 Task Mode</strong>: Tasks will be automatically distributed at 8:45am; you
-            can click "Late Assign" to manually assigin after 8:45am.
+            can click "Late Assign" to manually assign after 8:45am.
           </>
         ) : (
           <strong>PCA Auto Distribution</strong>
@@ -192,42 +210,52 @@ export default function AssignPage() {
         <>
           <section className="panel mt-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">New S1 Task</h2>
+              <h2 className="text-lg font-semibold">New Task</h2>
               <span className="badge bg-slate-100 text-slate-700">
                 Preview Score: {/moca/i.test(form.content) ? 2 : 1}
               </span>
             </div>
 
-            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[repeat(16,minmax(0,1fr))]">
               <Field
                 label="Ward / Bed no. *"
                 value={form.ward}
                 onChange={(v) => setForm((f) => ({ ...f, ward: v }))}
-                placeholder="e.g. E7/19"
+                placeholder="e.g. E8/19"
+                className="md:col-span-2"
               />
               <Field
-                label="Initial"
+                label="Initial *"
                 value={form.initial}
                 onChange={(v) => setForm((f) => ({ ...f, initial: v }))}
                 placeholder="e.g. Chan TM"
+                className="md:col-span-2"
               />
               <Field
-                label="HN (last 3 digits + letter)"
+                label="NH no. *"
                 value={form.hnPrefix}
                 onChange={(v) => setForm((f) => ({ ...f, hnPrefix: v }))}
                 placeholder="e.g. 296X"
+                className="md:col-span-2"
               />
               <Field
-                label="Therapist"
+                label="Therapist *"
                 value={form.therapistName}
                 onChange={(v) => setForm((f) => ({ ...f, therapistName: v }))}
                 placeholder="e.g. Jamie"
+                className="md:col-span-2"
+              />
+              <SpecialtyField
+                value={form.specialty}
+                onChange={(v) => setForm((f) => ({ ...f, specialty: v }))}
+                className="md:col-span-2"
               />
               <Field
                 label="Content *"
                 value={form.content}
                 onChange={(v) => setForm((f) => ({ ...f, content: v }))}
                 placeholder="e.g. MoCA cognitive assessment"
+                className="md:col-span-6"
               />
             </div>
 
@@ -242,7 +270,7 @@ export default function AssignPage() {
               </button>
               <button
                 onClick={handleAddTask}
-                disabled={pending || !form.ward.trim() || !form.content.trim()}
+                disabled={pending || !isTaskFormComplete}
                 className="btn btn-accent"
               >
                 Submit Task
@@ -266,6 +294,7 @@ export default function AssignPage() {
                     <th>Initial</th>
                     <th>HN</th>
                     <th>Therapist</th>
+                    <th>Specialty</th>
                     <th>Content</th>
                     <th>Pts</th>
                     <th>Assistant</th>
@@ -279,6 +308,7 @@ export default function AssignPage() {
                       <td>{t.initial ?? "—"}</td>
                       <td className="font-mono">{t.hnPrefix ?? "—"}</td>
                       <td>{t.therapistName ?? "—"}</td>
+                      <td>{t.specialty ?? "Medical"}</td>
                       <td>{t.content ?? "—"}</td>
                       <td>
                         <span
@@ -305,7 +335,7 @@ export default function AssignPage() {
 
                   {tasks.length === 0 && !pending && (
                     <tr>
-                      <td colSpan={8} className="py-10 text-center text-sm text-slate-400">
+                      <td colSpan={9} className="py-10 text-center text-sm text-slate-400">
                         No S1 tasks today
                       </td>
                     </tr>
@@ -438,25 +468,74 @@ export default function AssignPage() {
   );
 }
 
+function AssignPageSkeleton() {
+  return (
+    <main className="app-shell">
+      <header className="page-hero">
+        <div className="h-5 w-36 animate-pulse rounded-full bg-slate-200" />
+        <div className="mt-3 h-9 w-64 animate-pulse rounded bg-slate-200" />
+      </header>
+      <section className="panel">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="h-16 animate-pulse rounded-xl bg-slate-100" />
+          <div className="h-16 animate-pulse rounded-xl bg-slate-100" />
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SpecialtyField({
+  value,
+  onChange,
+  className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  className?: string;
+}) {
+  return (
+    <label className={`block min-w-0 ${className ?? ""}`}>
+      <span className="text-xs font-semibold text-slate-600">Specialty *</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="input-base"
+      >
+        {S1_SPECIALTY_OPTIONS.map((specialty) => (
+          <option key={specialty} value={specialty}>
+            {specialty}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function Field({
   label,
   value,
   onChange,
   placeholder,
+  list,
+  className,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  list?: string;
+  className?: string;
 }) {
   return (
-    <label className="block">
+    <label className={`block min-w-0 ${className ?? ""}`}>
       <span className="text-xs font-semibold text-slate-600">{label}</span>
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        list={list}
         className="input-base"
       />
     </label>

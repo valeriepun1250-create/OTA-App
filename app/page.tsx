@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 const ENTRY_POINTS = [
   {
     href: "/assign",
-    icon: "🩺",
+    icon: "📝",
     title: "Therapist Assignment",
     subtitle: "治療師任務分派",
     accentClass: "from-teal-100/80 via-cyan-50/70 to-white",
@@ -24,6 +24,13 @@ const ENTRY_POINTS = [
     subtitle: "出勤與人力設定",
     accentClass: "from-amber-100/80 via-orange-50/70 to-white",
   },
+  {
+    href: "/calendar",
+    icon: "🗓️",
+    title: "Calendar and Roster",
+    subtitle: "假期月曆與整月排程",
+    accentClass: "from-cyan-100/80 via-sky-50/70 to-white",
+  },
 ];
 
 export default function Home() {
@@ -37,7 +44,7 @@ export default function Home() {
           </h1>
         </header>
 
-        <div className="mx-auto grid max-w-4xl gap-4 sm:grid-cols-2 lg:max-w-none lg:grid-cols-3">
+        <div className="mx-auto grid max-w-4xl gap-4 sm:grid-cols-2 lg:max-w-none lg:grid-cols-4">
           {ENTRY_POINTS.map((entry) => (
             <Link
               key={entry.href}

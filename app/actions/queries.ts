@@ -11,6 +11,7 @@ import {
 import {
   SLOT_TO_POOL,
   isAvailableForSlot,
+  parseAttendanceNote,
   parseUnavailableSlots,
 } from "@/lib/attendance";
 import {
@@ -18,6 +19,7 @@ import {
   Role,
   SessionPool,
   SlotCode,
+  TEAM_ORDER,
   TeamCode,
 } from "@/types/db-enums";
 
@@ -179,6 +181,7 @@ export async function getDailyTaskRequests(dateStr: string) {
     initial: r.initial,
     hnPrefix: r.hnPrefix,
     therapistName: r.therapistName,
+    specialty: r.specialty,
     content: r.content,
     score: r.score,
     status: r.status,
@@ -308,6 +311,208 @@ function nextSlot(s: SlotCode): SlotCode | null {
     S4: "S5",   // PM block
   };
   return adjacent[s] ?? null;
+}
+
+function formatDateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function monthRange(monthStr: string): { start: Date; end: Date } {
+  const [year, month] = monthStr.split("-").map(Number);
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  return { start, end };
+}
+
+function isWeekday(date: Date): boolean {
+  const day = date.getUTCDay();
+  return day >= 1 && day <= 5;
+}
+
+function leaveSummary(status: AttendanceStatus, note: string | null | undefined) {
+  const parsed = parseAttendanceNote(note);
+  const unavailableSlots = parseUnavailableSlots(note);
+  let duration = parsed.leaveDuration ?? null;
+  if (!duration) {
+    if (status === AttendanceStatus.LEAVE) duration = "FULL_DAY";
+    else if (status === AttendanceStatus.PM_ONLY) duration = "AM";
+    else if (status === AttendanceStatus.AM_ONLY) duration = "PM";
+    else if (status === AttendanceStatus.OTHER) duration = "CUSTOM";
+  }
+  return {
+    status,
+    leaveType: parsed.leaveType ?? null,
+    leaveDuration: duration,
+    unavailableSlots,
+  };
+}
+
+export async function getCalendarMonth(monthStr: string) {
+  const { start, end } = monthRange(monthStr);
+  const [assistants, records] = await Promise.all([
+    prisma.staff.findMany({
+      where: { role: Role.ASSISTANT, active: true },
+      include: { team: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.attendance.findMany({
+      where: { date: { gte: start, lt: end } },
+    }),
+  ]);
+
+  const byDay: Record<string, {
+    date: string;
+    day: number;
+    weekday: boolean;
+    leaves: {
+      staffId: string;
+      name: string;
+      team: TeamCode | null;
+      status: AttendanceStatus;
+      leaveType: string | null;
+      leaveDuration: string | null;
+      unavailableSlots: SlotCode[];
+    }[];
+  }> = {};
+
+  for (let d = new Date(start); d < end; d = addDays(d, 1)) {
+    const key = formatDateKey(d);
+    byDay[key] = {
+      date: key,
+      day: d.getUTCDate(),
+      weekday: isWeekday(d),
+      leaves: [],
+    };
+  }
+
+  const assistantById = new Map(assistants.map((a) => [a.id, a]));
+  for (const record of records) {
+    const assistant = assistantById.get(record.staffId);
+    if (!assistant) continue;
+    const summary = leaveSummary(record.status as AttendanceStatus, record.note);
+    const hasLeave =
+      record.status !== AttendanceStatus.PRESENT ||
+      summary.unavailableSlots.length > 0 ||
+      !!summary.leaveType;
+    if (!hasLeave) continue;
+    const key = formatDateKey(record.date);
+    byDay[key]?.leaves.push({
+      staffId: assistant.id,
+      name: assistant.name,
+      team: (assistant.team?.code ?? null) as TeamCode | null,
+      ...summary,
+    });
+  }
+
+  return {
+    assistants: assistants.map((a) => ({
+      id: a.id,
+      name: a.name,
+      team: (a.team?.code ?? null) as TeamCode | null,
+    })),
+    days: Object.values(byDay),
+  };
+}
+
+export async function getMonthlyRoster(monthStr: string) {
+  const { start, end } = monthRange(monthStr);
+  const rows = await prisma.assignment.findMany({
+    where: {
+      date: { gte: start, lt: end },
+      slot: { in: ["S2", "S3", "S4", "S5"] },
+      status: { not: "CANCELLED" },
+    },
+    include: { assistant: { include: { team: true } } },
+    orderBy: [{ date: "asc" }, { slot: "asc" }],
+  });
+
+  const days: Record<string, Record<string, Record<string, {
+    id: string;
+    name: string;
+    homeTeam: TeamCode | null;
+  }[]>>> = {};
+
+  for (let d = new Date(start); d < end; d = addDays(d, 1)) {
+    if (!isWeekday(d)) continue;
+    const key = formatDateKey(d);
+    days[key] = {};
+    for (const team of TEAM_ORDER) {
+      days[key][team] = { S2: [], S3: [], S4: [], S5: [] };
+    }
+  }
+
+  for (const row of rows) {
+    if (!row.supportTeam || !row.assistant) continue;
+    const key = formatDateKey(row.date);
+    const slot = row.slot as Exclude<SlotCode, "S1">;
+    days[key]?.[row.supportTeam]?.[slot]?.push({
+      id: row.assistant.id,
+      name: row.assistant.name,
+      homeTeam: (row.assistant.team?.code ?? null) as TeamCode | null,
+    });
+  }
+
+  return Object.entries(days).map(([date, board]) => ({ date, board }));
+}
+
+export async function getAssistantWeeklySchedule(assistantId: string, weekStartStr: string) {
+  const start = toDate(weekStartStr);
+  const end = addDays(start, 5);
+  const assistant = await prisma.staff.findUnique({
+    where: { id: assistantId },
+    include: { team: true },
+  });
+  if (!assistant) throw new Error("Assistant not found");
+
+  const [assignments, attendances] = await Promise.all([
+    prisma.assignment.findMany({
+      where: {
+        assistantId,
+        date: { gte: start, lt: end },
+        status: { not: "CANCELLED" },
+      },
+      orderBy: [{ date: "asc" }, { slot: "asc" }],
+    }),
+    prisma.attendance.findMany({
+      where: { staffId: assistantId, date: { gte: start, lt: end } },
+    }),
+  ]);
+
+  const attendanceByDate = new Map(attendances.map((a) => [formatDateKey(a.date), a]));
+  return {
+    assistant: {
+      id: assistant.id,
+      name: assistant.name,
+      team: (assistant.team?.code ?? null) as TeamCode | null,
+    },
+    days: Array.from({ length: 5 }, (_, i) => {
+        const date = addDays(start, i);
+        const key = formatDateKey(date);
+        const attendance = attendanceByDate.get(key);
+        return {
+          date: key,
+          leave: attendance
+            ? leaveSummary(attendance.status as AttendanceStatus, attendance.note)
+            : null,
+          assignments: assignments
+            .filter((a) => formatDateKey(a.date) === key)
+            .map((a) => ({
+              id: a.id,
+              slot: a.slot as SlotCode,
+              supportTeam: (a.supportTeam ?? null) as TeamCode | null,
+              content: a.content,
+              ward: a.ward,
+              status: a.status,
+            })),
+        };
+      }),
+  };
 }
 
 /**

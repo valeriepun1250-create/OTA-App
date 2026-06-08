@@ -31,22 +31,59 @@ export function isOnDutyForPool(status: AttendanceStatus | null, pool: SessionPo
 
 export const ALL_SLOTS: SlotCode[] = ["S1", "S2", "S3", "S4", "S5"];
 
-export function parseUnavailableSlots(note: string | null | undefined): SlotCode[] {
-  if (!note) return [];
+export const LeaveType = {
+  AL: "AL",
+  SICK_LEAVE: "SICK_LEAVE",
+  FOLLOW_UP: "FOLLOW_UP",
+} as const;
+export type LeaveType = typeof LeaveType[keyof typeof LeaveType];
+
+export const LeaveDuration = {
+  FULL_DAY: "FULL_DAY",
+  AM: "AM",
+  PM: "PM",
+  CUSTOM: "CUSTOM",
+} as const;
+export type LeaveDuration = typeof LeaveDuration[keyof typeof LeaveDuration];
+
+export interface AttendanceNotePayload {
+  unavailableSlots?: SlotCode[];
+  leaveType?: LeaveType;
+  leaveDuration?: LeaveDuration;
+}
+
+export function parseAttendanceNote(note: string | null | undefined): AttendanceNotePayload {
+  if (!note) return {};
   try {
-    const parsed = JSON.parse(note) as { unavailableSlots?: unknown };
-    if (!Array.isArray(parsed.unavailableSlots)) return [];
-    return parsed.unavailableSlots.filter((slot): slot is SlotCode =>
-      ALL_SLOTS.includes(slot as SlotCode)
-    );
+    const parsed = JSON.parse(note) as AttendanceNotePayload;
+    return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    return [];
+    return {};
   }
+}
+
+export function parseUnavailableSlots(note: string | null | undefined): SlotCode[] {
+  const parsed = parseAttendanceNote(note);
+  if (!Array.isArray(parsed.unavailableSlots)) return [];
+  return parsed.unavailableSlots.filter((slot): slot is SlotCode =>
+    ALL_SLOTS.includes(slot as SlotCode)
+  );
+}
+
+export function encodeAttendanceNote(payload: AttendanceNotePayload): string | null {
+  const unavailableSlots = payload.unavailableSlots
+    ? ALL_SLOTS.filter((slot) => payload.unavailableSlots?.includes(slot))
+    : [];
+  const note: AttendanceNotePayload = {};
+  if (unavailableSlots.length > 0) note.unavailableSlots = unavailableSlots;
+  if (payload.leaveType) note.leaveType = payload.leaveType;
+  if (payload.leaveDuration) note.leaveDuration = payload.leaveDuration;
+  return Object.keys(note).length > 0 ? JSON.stringify(note) : null;
 }
 
 export function encodeUnavailableSlots(slots: SlotCode[]): string | null {
   const unique = ALL_SLOTS.filter((slot) => slots.includes(slot));
-  return unique.length > 0 ? JSON.stringify({ unavailableSlots: unique }) : null;
+  return encodeAttendanceNote({ unavailableSlots: unique });
 }
 
 export function isAvailableForSlot(
