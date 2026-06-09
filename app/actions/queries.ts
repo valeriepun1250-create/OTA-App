@@ -28,6 +28,34 @@ function toDate(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00.000Z`);
 }
 
+function getHongKongDateTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  return {
+    dateStr: `${get("year")}-${get("month")}-${get("day")}`,
+    hhmm: `${get("hour")}:${get("minute")}`,
+  };
+}
+
+async function cleanupExpiredS1TasksForReads() {
+  const now = getHongKongDateTimeParts();
+  const today = toDate(now.dateStr);
+  await prisma.assignment.deleteMany({
+    where:
+      now.hhmm >= "23:59"
+        ? { slot: "S1", date: { lte: today } }
+        : { slot: "S1", date: { lt: today } },
+  });
+}
+
 /** Temporary: get any therapist id (to be replaced by auth session in production) */
 export async function getAnyTherapistId(): Promise<string> {
   const t = await prisma.staff.findFirst({ where: { role: Role.THERAPIST, active: true } });
@@ -167,6 +195,7 @@ export async function getDailyTeamUsage(dateStr: string): Promise<Record<TeamCod
 
 /** Get all S1 tasks for the day (including pending and dispatched) — for therapist assignment page */
 export async function getDailyTaskRequests(dateStr: string) {
+  await cleanupExpiredS1TasksForReads();
   const date = toDate(dateStr);
   const rows = await prisma.assignment.findMany({
     where: { date, slot: "S1", status: { not: "CANCELLED" } },
@@ -246,6 +275,7 @@ export async function getRankedAssistants(args: {
 
 /** Assistant's full daily schedule — used by mobile dashboard */
 export async function getAssistantDailySchedule(assistantId: string, dateStr: string) {
+  await cleanupExpiredS1TasksForReads();
   const date = toDate(dateStr);
   const assistant = await prisma.staff.findUnique({
     where: { id: assistantId },

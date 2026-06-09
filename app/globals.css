@@ -81,6 +81,10 @@
     );
   }
 
+  .page-hero-solid {
+    background: rgb(var(--panel));
+  }
+
   .panel {
     @apply rounded-2xl border bg-white p-4 shadow-sm sm:p-5;
     border-color: rgb(var(--line));

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState, useTransition } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -10,9 +10,12 @@ import {
   getDistributionBoard,
 } from "@/app/actions/queries";
 import {
+  cleanupExpiredS1Tasks,
   createTaskRequest,
+  deleteS1Task,
   dispatchPendingTasks,
   generateAutoSchedule,
+  updateS1TaskContent,
 } from "@/app/actions/mutations";
 import { S1_SPECIALTY_OPTIONS, TEAM_LABEL, TEAM_ORDER, type TeamCode } from "@/types/db-enums";
 import type { TeamPoolQuota } from "@/lib/allocation";
@@ -31,6 +34,87 @@ const PCA_SLOT_TIME: Record<"S2" | "S3" | "S4" | "S5", string> = {
   S5: "15:15-17:00",
 };
 const PCA_SLOTS = ["S2", "S3", "S4", "S5"] as const;
+const TASK_STATUS_META: Record<string, { label: string; className: string }> = {
+  PENDING: {
+    label: "Pending",
+    className: "bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-200",
+  },
+  IN_PROGRESS: {
+    label: "In Progress",
+    className: "bg-yellow-100 text-yellow-800 ring-1 ring-inset ring-yellow-200",
+  },
+  DONE: {
+    label: "Done",
+    className: "bg-emerald-100 text-emerald-800 ring-1 ring-inset ring-emerald-200",
+  },
+};
+
+function TaskStatusBadge({ status }: { status: string }) {
+  const meta =
+    TASK_STATUS_META[status] ?? {
+      label: status.replace(/_/g, " "),
+      className: "bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-200",
+    };
+
+  return <span className={`badge ${meta.className}`}>{meta.label}</span>;
+}
+
+function PencilIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v5" />
+      <path d="M14 11v5" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  );
+}
 
 interface TaskRow {
   id: string;
@@ -75,6 +159,12 @@ function AssignPageContent() {
   >(null);
 
   const [pending, startTransition] = useTransition();
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState("");
+  const [isTaskSearchOpen, setIsTaskSearchOpen] = useState(false);
+  const [taskSearch, setTaskSearch] = useState("");
+  const [taskError, setTaskError] = useState("");
+  const taskSearchInputRef = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState({
     ward: "",
@@ -87,6 +177,26 @@ function AssignPageContent() {
 
   const isS1 = mode === "S1";
   const pendingCount = tasks.filter((t) => t.isPending).length;
+  const taskSearchTerm = taskSearch.trim().toLowerCase();
+  const filteredTasks = useMemo(() => {
+    if (!taskSearchTerm) return tasks;
+
+    return tasks.filter((task) =>
+      [
+        task.ward,
+        task.initial,
+        task.hnPrefix,
+        task.therapistName,
+        task.specialty ?? "Medical",
+        task.content,
+        String(task.score),
+        task.assistantName,
+        task.assistantTeam,
+        task.status,
+        task.isPending ? "pending" : "assigned",
+      ].some((value) => value?.toLowerCase().includes(taskSearchTerm))
+    );
+  }, [tasks, taskSearchTerm]);
   const isTaskFormComplete =
     !!form.ward.trim() &&
     !!form.initial.trim() &&
@@ -97,6 +207,7 @@ function AssignPageContent() {
 
   const refreshS1 = () => {
     startTransition(async () => {
+      await cleanupExpiredS1Tasks();
       const list = await getDailyTaskRequests(dateStr);
       setTasks(list);
     });
@@ -123,20 +234,31 @@ function AssignPageContent() {
     refreshS2S5();
   }, [dateStr, mode]);
 
+  useEffect(() => {
+    if (isTaskSearchOpen) {
+      taskSearchInputRef.current?.focus();
+    }
+  }, [isTaskSearchOpen]);
+
   const handleAddTask = () => {
     if (!isTaskFormComplete) return;
     startTransition(async () => {
-      await createTaskRequest({
-        dateStr,
-        ward: form.ward.trim(),
-        initial: form.initial.trim() || undefined,
-        hnPrefix: form.hnPrefix.trim() || undefined,
-        therapistName: form.therapistName.trim() || undefined,
-        specialty: form.specialty.trim() || undefined,
-        content: form.content.trim(),
-      });
-      setForm((f) => ({ ...f, ward: "", initial: "", hnPrefix: "", content: "" }));
-      refreshS1();
+      try {
+        setTaskError("");
+        await createTaskRequest({
+          dateStr,
+          ward: form.ward.trim(),
+          initial: form.initial.trim() || undefined,
+          hnPrefix: form.hnPrefix.trim() || undefined,
+          therapistName: form.therapistName.trim() || undefined,
+          specialty: form.specialty.trim() || undefined,
+          content: form.content.trim(),
+        });
+        setForm((f) => ({ ...f, ward: "", initial: "", hnPrefix: "", content: "" }));
+        refreshS1();
+      } catch (error) {
+        setTaskError(error instanceof Error ? error.message : "Task submission failed");
+      }
     });
   };
 
@@ -144,6 +266,46 @@ function AssignPageContent() {
     startTransition(async () => {
       await dispatchPendingTasks(dateStr);
       refreshS1();
+    });
+  };
+
+  const handleDeleteTask = (task: TaskRow) => {
+    if (!confirm(`Delete S1 task for ${task.ward}?`)) return;
+    startTransition(async () => {
+      try {
+        setTaskError("");
+        await deleteS1Task(task.id);
+        if (editingTaskId === task.id) {
+          setEditingTaskId(null);
+          setEditingContent("");
+        }
+        refreshS1();
+      } catch (error) {
+        setTaskError(error instanceof Error ? error.message : "Task deletion failed");
+      }
+    });
+  };
+
+  const startEditingTask = (task: TaskRow) => {
+    setEditingTaskId(task.id);
+    setEditingContent(task.content ?? "");
+  };
+
+  const handleSaveContent = () => {
+    if (!editingTaskId || !editingContent.trim()) return;
+    startTransition(async () => {
+      try {
+        setTaskError("");
+        await updateS1TaskContent({
+          assignmentId: editingTaskId,
+          content: editingContent.trim(),
+        });
+        setEditingTaskId(null);
+        setEditingContent("");
+        refreshS1();
+      } catch (error) {
+        setTaskError(error instanceof Error ? error.message : "Task update failed");
+      }
     });
   };
 
@@ -260,6 +422,11 @@ function AssignPageContent() {
             </div>
 
             <div className="mt-4 flex flex-wrap justify-end gap-2">
+              {taskError && (
+                <div className="mr-auto rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+                  {taskError}
+                </div>
+              )}
               <button
                 onClick={handleBatchDispatch}
                 disabled={pending || pendingCount === 0}
@@ -279,10 +446,45 @@ function AssignPageContent() {
           </section>
 
           <section className="mt-5">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold">Today's S1 Tasks</h2>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                <h2 className="text-lg font-semibold">Today's S1 Tasks</h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isTaskSearchOpen) {
+                      setTaskSearch("");
+                      setIsTaskSearchOpen(false);
+                      return;
+                    }
+                    setIsTaskSearchOpen(true);
+                  }}
+                  className="btn btn-secondary h-9 w-9 min-h-0 p-0"
+                  aria-label={isTaskSearchOpen ? "Close S1 task search" : "Search S1 tasks"}
+                  title={isTaskSearchOpen ? "Close search" : "Search"}
+                >
+                  <SearchIcon />
+                </button>
+                {isTaskSearchOpen && (
+                  <div className="w-full sm:w-64">
+                    <label htmlFor="s1-task-search" className="sr-only">
+                      Search S1 tasks
+                    </label>
+                    <input
+                      id="s1-task-search"
+                      ref={taskSearchInputRef}
+                      type="text"
+                      value={taskSearch}
+                      onChange={(e) => setTaskSearch(e.target.value)}
+                      placeholder="Search tasks"
+                      className="input-base mt-0 h-9"
+                    />
+                  </div>
+                )}
+              </div>
               <span className="text-sm text-slate-600">
-                Total {tasks.length} · Pending {pendingCount}
+                {taskSearchTerm ? `Showing ${filteredTasks.length} of ${tasks.length}` : `Total ${tasks.length}`} · Pending{" "}
+                {pendingCount}
               </span>
             </div>
 
@@ -299,44 +501,109 @@ function AssignPageContent() {
                     <th>Pts</th>
                     <th>Assistant</th>
                     <th>Status</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {tasks.map((t) => (
-                    <tr key={t.id} className={t.isPending ? "bg-amber-50/50" : ""}>
-                      <td className="font-mono font-semibold">{t.ward}</td>
-                      <td>{t.initial ?? "—"}</td>
-                      <td className="font-mono">{t.hnPrefix ?? "—"}</td>
-                      <td>{t.therapistName ?? "—"}</td>
-                      <td>{t.specialty ?? "Medical"}</td>
-                      <td>{t.content ?? "—"}</td>
-                      <td>
-                        <span
-                          className={`badge ${
-                            t.score >= 2 ? "bg-rose-100 text-rose-700" : "bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          {t.score}
-                        </span>
-                      </td>
-                      <td>
-                        {t.isPending ? (
-                          <span className="badge bg-amber-100 text-amber-800">Pending</span>
-                        ) : (
-                          <span>
-                            {t.assistantName}
-                            <span className="ml-1 text-xs text-slate-500">({t.assistantTeam})</span>
+                  {filteredTasks.map((t) => {
+                    const isEditing = editingTaskId === t.id;
+                    return (
+                      <tr key={t.id} className={t.isPending ? "bg-amber-50/50" : ""}>
+                        <td className="font-mono font-semibold">{t.ward}</td>
+                        <td>{t.initial ?? "—"}</td>
+                        <td className="font-mono">{t.hnPrefix ?? "—"}</td>
+                        <td>{t.therapistName ?? "—"}</td>
+                        <td>{t.specialty ?? "Medical"}</td>
+                        <td className="min-w-60">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editingContent}
+                              onChange={(e) => setEditingContent(e.target.value)}
+                              className="input-base min-w-56"
+                            />
+                          ) : (
+                            t.content ?? "—"
+                          )}
+                        </td>
+                        <td>
+                          <span
+                            className={`badge ${
+                              t.score >= 2 ? "bg-rose-100 text-rose-700" : "bg-slate-100 text-slate-700"
+                            }`}
+                          >
+                            {t.score}
                           </span>
-                        )}
-                      </td>
-                      <td className="text-xs text-slate-500">{t.status}</td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td>
+                          {t.isPending ? (
+                            <span className="badge bg-amber-100 text-amber-800">Pending</span>
+                          ) : (
+                            <span>
+                              {t.assistantName}
+                              <span className="ml-1 text-xs text-slate-500">({t.assistantTeam})</span>
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <TaskStatusBadge status={t.status} />
+                        </td>
+                        <td className="whitespace-nowrap">
+                          {isEditing ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={handleSaveContent}
+                                disabled={pending || !editingContent.trim()}
+                                className="btn btn-primary px-2 py-1 text-xs"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingTaskId(null);
+                                  setEditingContent("");
+                                }}
+                                disabled={pending}
+                                className="btn btn-secondary px-2 py-1 text-xs"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => startEditingTask(t)}
+                                disabled={pending}
+                                className="btn btn-secondary h-9 w-9 min-h-0 p-0"
+                                aria-label={`Edit S1 task for ${t.ward}`}
+                                title="Edit"
+                              >
+                                <PencilIcon />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteTask(t)}
+                                disabled={pending}
+                                className="btn h-9 w-9 min-h-0 bg-rose-600 p-0 text-white hover:bg-rose-700"
+                                aria-label={`Delete S1 task for ${t.ward}`}
+                                title="Delete"
+                              >
+                                <TrashIcon />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
 
-                  {tasks.length === 0 && !pending && (
+                  {filteredTasks.length === 0 && !pending && (
                     <tr>
-                      <td colSpan={9} className="py-10 text-center text-sm text-slate-400">
-                        No S1 tasks today
+                      <td colSpan={10} className="py-10 text-center text-sm text-slate-400">
+                        {tasks.length === 0 ? "No S1 tasks today" : "No matching S1 tasks"}
                       </td>
                     </tr>
                   )}

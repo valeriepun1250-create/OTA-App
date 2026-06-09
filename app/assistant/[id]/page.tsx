@@ -49,7 +49,7 @@ export default async function AssistantDashboard({
 
   return (
     <main className="app-shell max-w-5xl">
-      <header className="page-hero sticky top-3 z-10">
+      <header className="page-hero page-hero-solid sticky top-3 z-10">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="badge bg-emerald-100 text-emerald-800">Personal Dashboard</p>

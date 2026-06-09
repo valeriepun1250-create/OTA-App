@@ -25,6 +25,28 @@ function toDate(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00.000Z`);
 }
 
+function getHongKongDateTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  return {
+    dateStr: `${get("year")}-${get("month")}-${get("day")}`,
+    hhmm: `${get("hour")}:${get("minute")}`,
+  };
+}
+
+function isExpiredS1Date(dateStr: string): boolean {
+  const now = getHongKongDateTimeParts();
+  return dateStr < now.dateStr || (dateStr === now.dateStr && now.hhmm >= "23:59");
+}
+
 function formatDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -193,6 +215,27 @@ export async function setCalendarLeave(args: {
 
 /** 8:45 batch dispatch cutoff time (HH:mm) */
 const BATCH_CUTOFF = "08:45";
+const S1_DAILY_DELETE_CUTOFF = "23:59";
+
+/**
+ * S1 tasks expire at 23:59 Hong Kong time.
+ * This is opportunistic cleanup: it runs when the app/server is used, not from a background cron.
+ */
+export async function cleanupExpiredS1Tasks() {
+  const now = getHongKongDateTimeParts();
+  const today = toDate(now.dateStr);
+  const where =
+    now.hhmm >= S1_DAILY_DELETE_CUTOFF
+      ? { slot: "S1", date: { lte: today } }
+      : { slot: "S1", date: { lt: today } };
+
+  const result = await prisma.assignment.deleteMany({ where });
+  if (result.count > 0) {
+    revalidatePath("/assign");
+    revalidatePath("/assistant");
+  }
+  return { deleted: result.count };
+}
 
 /**
  * Therapist creates S1 task — no assistant specified.
@@ -209,6 +252,11 @@ export async function createTaskRequest(args: {
   specialty?: string;
   content: string;
 }) {
+  await cleanupExpiredS1Tasks();
+  if (isExpiredS1Date(args.dateStr)) {
+    throw new Error("S1 tasks are closed after 23:59 Hong Kong time");
+  }
+
   if (
     !args.ward.trim() ||
     !args.initial?.trim() ||
@@ -244,14 +292,55 @@ export async function createTaskRequest(args: {
   });
 
   // After 08:45 → auto-dispatch to nearest assistant
-  const now = new Date();
-  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  if (hhmm >= BATCH_CUTOFF) {
+  if (getHongKongDateTimeParts().hhmm >= BATCH_CUTOFF) {
     await dispatchPendingTasks(args.dateStr);
   }
 
   revalidatePath("/assign");
   return created;
+}
+
+export async function deleteS1Task(assignmentId: string) {
+  const existing = await prisma.assignment.findUnique({
+    where: { id: assignmentId },
+    select: { slot: true, assistantId: true },
+  });
+  if (!existing || existing.slot !== "S1") {
+    throw new Error("S1 task not found");
+  }
+
+  await prisma.assignment.delete({ where: { id: assignmentId } });
+  revalidatePath("/assign");
+  if (existing.assistantId) revalidatePath(`/assistant/${existing.assistantId}`);
+  return { deleted: 1 };
+}
+
+export async function updateS1TaskContent(args: {
+  assignmentId: string;
+  content: string;
+}) {
+  const content = args.content.trim();
+  if (!content) throw new Error("Content is required");
+
+  const existing = await prisma.assignment.findUnique({
+    where: { id: args.assignmentId },
+    select: { slot: true, assistantId: true },
+  });
+  if (!existing || existing.slot !== "S1") {
+    throw new Error("S1 task not found");
+  }
+
+  const updated = await prisma.assignment.update({
+    where: { id: args.assignmentId },
+    data: {
+      content,
+      score: computeScore(content),
+    },
+  });
+
+  revalidatePath("/assign");
+  if (existing.assistantId) revalidatePath(`/assistant/${existing.assistantId}`);
+  return updated;
 }
 
 /**
