@@ -253,6 +253,9 @@ export function computeScore(content: string | null | undefined): number {
   return /moca/i.test(content) ? 2 : 1;
 }
 
+/** Soft per-assistant S1 workload ceiling used during automatic dispatch. */
+export const S1_MAX_POINTS = 10;
+
 // ─────────────────────────────────────────────
 // S1 batch task dispatch (dispatchTasksByLocation)
 //
@@ -302,7 +305,13 @@ export function dispatchTasksByLocation(
       ? candidates.some((c) => c.homeTeam === preferredTeam)
       : false;
 
-    const ranked = candidates
+    // Keep each assistant at or below the soft ceiling whenever that is
+    // possible. If every candidate would exceed it, fall back to the normal
+    // specialty → location → accumulated-score ordering so tasks never stall.
+    const withinPointLimit = candidates.filter((c) => score.get(c.id)! + task.score <= S1_MAX_POINTS);
+    const pool = withinPointLimit.length > 0 ? withinPointLimit : candidates;
+
+    const ranked = pool
       .map((c) => {
         const myWards = wards.get(c.id)!;
         let tier: LocationTier = LocationTier.CROSS_CLUSTER;

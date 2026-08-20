@@ -89,7 +89,6 @@ export default async function AssistantDashboard({
                       {t.initial && <> · {t.initial}</>}
                       {t.hnPrefix && <> · HN {t.hnPrefix}</>}
                       <> · {t.specialty ?? "Medical"}</>
-                      <> · {t.score ?? 1} pts</>
                     </div>
                     {t.therapistName && <div className="mt-0.5 text-sm text-slate-400">by {t.therapistName}</div>}
                   </div>

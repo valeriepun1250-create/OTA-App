@@ -20,6 +20,10 @@ const devAllowedOrigins = [
 
 const nextConfig = {
   reactStrictMode: true,
+  // Keep production validation/build artifacts isolated from a running dev
+  // server. Sharing `.next` lets webpack runtimes reference chunks from the
+  // other mode (for example, the intermittent missing `819.js` error).
+  distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
   experimental: {
     serverActions: {
       allowedOrigins: devAllowedOrigins,

@@ -659,6 +659,39 @@ describe("dispatchTasksByLocation", () => {
     expect(result[0].assistantId).toBe("free");
   });
 
+  it("overflows to another assistant when the preferred assistant would exceed 10 points", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "3A", score: 2, specialty: "Stroke" }],
+      [
+        { id: "stroke", homeTeam: "STROKE", currentWards: ["3B"], currentScore: 9 },
+        { id: "available", homeTeam: "NS", currentWards: ["8E"], currentScore: 5 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("available");
+  });
+
+  it("allows normal distribution when every assistant would exceed 10 points", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "3A", score: 2, specialty: "Stroke" }],
+      [
+        { id: "stroke", homeTeam: "STROKE", currentWards: ["8E"], currentScore: 10 },
+        { id: "nearby", homeTeam: "NS", currentWards: ["3B"], currentScore: 10 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("stroke");
+  });
+
+  it("keeps an assistant at exactly 10 points when possible", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "3A", score: 1 }],
+      [
+        { id: "nine", currentWards: [], currentScore: 9 },
+        { id: "ten", currentWards: [], currentScore: 10 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("nine");
+  });
+
   it("high-score tasks dispatched first → same tier scores are balanced (different wards)", () => {
     // 4 tasks in 4 different cluster 1 wards; 2 assistants with no existing tasks → all CROSS_CLUSTER tier
     // High score first: MoCA(2) → a1, AMT(1) → a2, AMT(1) → a2 (a2 now=1, a1=2, but next task a2 still lower tier)

@@ -8,8 +8,10 @@ import {
   getDailyTeamUsage,
   getDailyTaskRequests,
   getDistributionBoard,
+  getS1AssignmentPool,
 } from "@/app/actions/queries";
 import {
+  assignS1TaskToAssistant,
   cleanupExpiredS1Tasks,
   createTaskRequest,
   deleteS1Task,
@@ -18,7 +20,7 @@ import {
   updateS1TaskContent,
 } from "@/app/actions/mutations";
 import { S1_SPECIALTY_OPTIONS, TEAM_LABEL, TEAM_ORDER, type TeamCode } from "@/types/db-enums";
-import type { TeamPoolQuota } from "@/lib/allocation";
+import { dispatchTasksByLocation, S1_MAX_POINTS, type TeamPoolQuota } from "@/lib/allocation";
 import { getTodayInHongKong } from "@/lib/date";
 
 type Mode = "S1" | "PCA";
@@ -132,6 +134,14 @@ interface TaskRow {
   isPending: boolean;
 }
 
+interface S1AssignmentPoolRow {
+  id: string;
+  name: string;
+  team: TeamCode | null;
+  currentPoints: number;
+  currentWards: string[];
+}
+
 export default function AssignPage() {
   return (
     <Suspense fallback={<AssignPageSkeleton />}>
@@ -147,6 +157,8 @@ function AssignPageContent() {
   const [mode, setMode] = useState<Mode>("S1");
 
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [s1AssignmentPool, setS1AssignmentPool] = useState<S1AssignmentPoolRow[]>([]);
+  const [lateAssigneeByTask, setLateAssigneeByTask] = useState<Record<string, string>>({});
   const [quotas, setQuotas] = useState<{
     am: TeamPoolQuota[];
     pm: TeamPoolQuota[];
@@ -197,6 +209,25 @@ function AssignPageContent() {
       ].some((value) => value?.toLowerCase().includes(taskSearchTerm))
     );
   }, [tasks, taskSearchTerm]);
+  const recommendedAssigneeByTask = useMemo(() => {
+    const plan = dispatchTasksByLocation(
+      tasks
+        .filter((task) => task.isPending)
+        .map((task) => ({
+          id: task.id,
+          ward: task.ward,
+          score: task.score,
+          specialty: task.specialty,
+        })),
+      s1AssignmentPool.map((assistant) => ({
+        id: assistant.id,
+        homeTeam: assistant.team,
+        currentScore: assistant.currentPoints,
+        currentWards: assistant.currentWards,
+      }))
+    );
+    return Object.fromEntries(plan.map((item) => [item.taskId, item.assistantId]));
+  }, [tasks, s1AssignmentPool]);
   const isTaskFormComplete =
     !!form.ward.trim() &&
     !!form.initial.trim() &&
@@ -208,8 +239,12 @@ function AssignPageContent() {
   const refreshS1 = () => {
     startTransition(async () => {
       await cleanupExpiredS1Tasks();
-      const list = await getDailyTaskRequests(dateStr);
+      const [list, pool] = await Promise.all([
+        getDailyTaskRequests(dateStr),
+        getS1AssignmentPool(dateStr),
+      ]);
       setTasks(list);
+      setS1AssignmentPool(pool as S1AssignmentPoolRow[]);
     });
   };
 
@@ -266,6 +301,25 @@ function AssignPageContent() {
     startTransition(async () => {
       await dispatchPendingTasks(dateStr);
       refreshS1();
+    });
+  };
+
+  const handleLateAssign = (task: TaskRow) => {
+    const assistantId = lateAssigneeByTask[task.id] ?? recommendedAssigneeByTask[task.id];
+    if (!assistantId) return;
+    startTransition(async () => {
+      try {
+        setTaskError("");
+        await assignS1TaskToAssistant({ assignmentId: task.id, assistantId });
+        setLateAssigneeByTask((current) => {
+          const next = { ...current };
+          delete next[task.id];
+          return next;
+        });
+        refreshS1();
+      } catch (error) {
+        setTaskError(error instanceof Error ? error.message : "Late assignment failed");
+      }
     });
   };
 
@@ -360,8 +414,9 @@ function AssignPageContent() {
       >
         {isS1 ? (
           <>
-            <strong>S1 Task Mode</strong>: Tasks will be automatically distributed at 8:45am; you
-            can click "Late Assign" to manually assign after 8:45am.
+            <strong>S1 Task Mode</strong>: The automatic batch balances specialty, ward location,
+            and each assistant&apos;s S1 points up to a soft 10-point ceiling. After 8:45am, choose
+            an assistant directly on each pending task.
           </>
         ) : (
           <strong>PCA Auto Distribution</strong>
@@ -431,9 +486,9 @@ function AssignPageContent() {
                 onClick={handleBatchDispatch}
                 disabled={pending || pendingCount === 0}
                 className="btn btn-secondary"
-                title="Late-assign all pending tasks to nearby assistants at once"
+                title="Run the automatic S1 batch using specialty, location, and point balancing"
               >
-                Late Assign ({pendingCount})
+                Run Auto Batch ({pendingCount})
               </button>
               <button
                 onClick={handleAddTask}
@@ -537,7 +592,41 @@ function AssignPageContent() {
                         </td>
                         <td>
                           {t.isPending ? (
-                            <span className="badge bg-amber-100 text-amber-800">Pending</span>
+                            <div className="flex min-w-56 flex-col gap-1.5">
+                              <select
+                                value={lateAssigneeByTask[t.id] ?? recommendedAssigneeByTask[t.id] ?? ""}
+                                onChange={(event) =>
+                                  setLateAssigneeByTask((current) => ({
+                                    ...current,
+                                    [t.id]: event.target.value,
+                                  }))
+                                }
+                                disabled={pending || s1AssignmentPool.length === 0}
+                                className="input-base mt-0 h-9 text-xs"
+                                aria-label={`Choose assistant for S1 task at ${t.ward}`}
+                              >
+                                <option value="">No assistant available</option>
+                                {s1AssignmentPool.map((assistant) => {
+                                  const wouldExceed = assistant.currentPoints + t.score > S1_MAX_POINTS;
+                                  const isRecommended = recommendedAssigneeByTask[t.id] === assistant.id;
+                                  return (
+                                    <option key={assistant.id} value={assistant.id}>
+                                      {assistant.name} · {assistant.currentPoints} pts
+                                      {wouldExceed ? " · over 10" : ""}
+                                      {isRecommended ? " · recommended" : ""}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => handleLateAssign(t)}
+                                disabled={pending || !s1AssignmentPool.length || !(lateAssigneeByTask[t.id] ?? recommendedAssigneeByTask[t.id])}
+                                className="btn btn-secondary self-start px-2 py-1 text-xs"
+                              >
+                                Late Assign
+                              </button>
+                            </div>
                           ) : (
                             <span>
                               {t.assistantName}

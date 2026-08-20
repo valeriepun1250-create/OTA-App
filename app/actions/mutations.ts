@@ -213,8 +213,6 @@ export async function setCalendarLeave(args: {
   revalidatePath(`/assistant/${args.staffId}`);
 }
 
-/** 8:45 batch dispatch cutoff time (HH:mm) */
-const BATCH_CUTOFF = "08:45";
 const S1_DAILY_DELETE_CUTOFF = "23:59";
 
 /**
@@ -239,8 +237,8 @@ export async function cleanupExpiredS1Tasks() {
 
 /**
  * Therapist creates S1 task — no assistant specified.
- *   - If current time < 08:45 → goes to pending pool, wait for batch dispatch
- *   - If current time >= 08:45 → immediately dispatched to nearest assistant
+ *   - Before the 08:45 batch, goes to the pending pool
+ *   - After 08:45, remains pending until the therapist chooses an assistant
  *   - score auto-calculated based on whether content contains "MoCA" (MoCA=2, others=1)
  */
 export async function createTaskRequest(args: {
@@ -291,13 +289,54 @@ export async function createTaskRequest(args: {
     },
   });
 
-  // After 08:45 → auto-dispatch to nearest assistant
-  if (getHongKongDateTimeParts().hhmm >= BATCH_CUTOFF) {
-    await dispatchPendingTasks(args.dateStr);
-  }
-
   revalidatePath("/assign");
   return created;
+}
+
+/**
+ * Therapist manually assigns one pending S1 task after the 08:45 cutoff.
+ * Manual assignment intentionally does not enforce the 10-point soft cap:
+ * the therapist has explicitly chosen the assistant.
+ */
+export async function assignS1TaskToAssistant(args: {
+  assignmentId: string;
+  assistantId: string;
+}) {
+  const task = await prisma.assignment.findUnique({
+    where: { id: args.assignmentId },
+    select: { date: true, slot: true, assistantId: true, status: true },
+  });
+  if (!task || task.slot !== "S1") throw new Error("S1 task not found");
+  if (task.assistantId) throw new Error("S1 task is already assigned");
+  if (task.status === "CANCELLED") throw new Error("Cancelled S1 task cannot be assigned");
+
+  const assistant = await prisma.staff.findUnique({
+    where: { id: args.assistantId },
+    select: { id: true, role: true, active: true },
+  });
+  if (!assistant || assistant.role !== "ASSISTANT" || !assistant.active) {
+    throw new Error("Assistant is not available");
+  }
+
+  const attendance = await prisma.attendance.findUnique({
+    where: { date_staffId: { date: task.date, staffId: assistant.id } },
+    select: { status: true, note: true },
+  });
+  if (!isAvailableForSlot(
+    (attendance?.status ?? null) as AttendanceStatus | null,
+    attendance?.note ?? null,
+    "S1"
+  )) {
+    throw new Error("Assistant is not on duty for S1");
+  }
+
+  const updated = await prisma.assignment.update({
+    where: { id: args.assignmentId },
+    data: { assistantId: assistant.id, dispatchedAt: new Date() },
+  });
+  revalidatePath("/assign");
+  revalidatePath(`/assistant/${assistant.id}`);
+  return updated;
 }
 
 export async function deleteS1Task(assignmentId: string) {
@@ -346,7 +385,7 @@ export async function updateS1TaskContent(args: {
 /**
  * Dispatch all S1 pending tasks for the day using "same cluster + score balance" algorithm.
  * - Can be manually triggered (admin clicks button)
- * - Or auto-called after task creation (after 08:45)
+ * - Intended for the 08:45 batch; late tasks can instead be assigned one-by-one by the therapist
  */
 export async function dispatchPendingTasks(dateStr: string) {
   const date = toDate(dateStr);

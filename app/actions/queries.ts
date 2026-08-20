@@ -223,6 +223,42 @@ export async function getDailyTaskRequests(dateStr: string) {
   }));
 }
 
+/** Available assistants for therapist-selected late S1 assignment. */
+export async function getS1AssignmentPool(dateStr: string) {
+  const date = toDate(dateStr);
+  const attendance = await getDailyAttendance(dateStr);
+  const onDuty = attendance.filter((assistant) =>
+    isAvailableForSlot(
+      assistant.todayStatus,
+      JSON.stringify({ unavailableSlots: assistant.unavailableSlots }),
+      "S1"
+    )
+  );
+
+  const assignments = await prisma.assignment.findMany({
+    where: {
+      date,
+      slot: "S1",
+      assistantId: { in: onDuty.map((assistant) => assistant.id) },
+      status: { not: "CANCELLED" },
+    },
+    select: { assistantId: true, ward: true, score: true },
+  });
+
+  return onDuty
+    .map((assistant) => {
+      const own = assignments.filter((task) => task.assistantId === assistant.id);
+      return {
+        id: assistant.id,
+        name: assistant.name,
+        team: assistant.team,
+        currentPoints: own.reduce((sum, task) => sum + task.score, 0),
+        currentWards: own.map((task) => task.ward),
+      };
+    })
+    .sort((a, b) => a.currentPoints - b.currentPoints || a.name.localeCompare(b.name));
+}
+
 /**
  * Recommend assistants: based on §2.4 three-tier proximity + load balancing + overlap prevention (busy)
  * Applies to S1 (task mode) and S2-S5 (reservation mode)
@@ -259,7 +295,7 @@ export async function getRankedAssistants(args: {
       assistantId: id,
       // Only take S1 real wards; S2-S5 auto allocation ward is a placeholder
       existingWards: own.filter((t) => t.slot === "S1").map((t) => t.ward),
-      totalScore: own.reduce((sum, t) => sum + (t.task?.score ?? 0), 0),
+      totalScore: own.reduce((sum, t) => sum + (t.score ?? 0), 0),
       isBusy: own.some((t) => t.slot === args.slot), // §Overlap prevention
     };
   });
