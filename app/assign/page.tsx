@@ -239,13 +239,19 @@ function AssignPageContent() {
   const refreshS1 = () => {
     startTransition(async () => {
       await cleanupExpiredS1Tasks();
-      const [list, pool] = await Promise.all([
-        getDailyTaskRequests(dateStr),
-        getS1AssignmentPool(dateStr),
-      ]);
-      setTasks(list);
-      setS1AssignmentPool(pool as S1AssignmentPoolRow[]);
+      await refreshS1Data();
     });
+  };
+
+  // All therapists share the same server-side task pool. Poll while visible so
+  // another therapist's submissions and assignments appear without a reload.
+  const refreshS1Data = async () => {
+    const [list, pool] = await Promise.all([
+      getDailyTaskRequests(dateStr),
+      getS1AssignmentPool(dateStr),
+    ]);
+    setTasks(list);
+    setS1AssignmentPool(pool as S1AssignmentPoolRow[]);
   };
 
   const refreshS2S5 = () => {
@@ -268,6 +274,24 @@ function AssignPageContent() {
     }
     refreshS2S5();
   }, [dateStr, mode]);
+
+  useEffect(() => {
+    if (!isS1) return;
+
+    const poll = () => {
+      if (document.visibilityState !== "visible" || pending) return;
+      void refreshS1Data();
+    };
+    const interval = window.setInterval(poll, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [dateStr, isS1, pending]);
 
   useEffect(() => {
     if (isTaskSearchOpen) {
@@ -503,7 +527,7 @@ function AssignPageContent() {
           <section className="mt-5">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-                <h2 className="text-lg font-semibold">Today's S1 Tasks</h2>
+                <h2 className="text-lg font-semibold">S1 Tasks · {dateStr}</h2>
                 <button
                   type="button"
                   onClick={() => {

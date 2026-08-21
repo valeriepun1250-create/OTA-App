@@ -9,6 +9,7 @@ export const Role = {
 export type Role = typeof Role[keyof typeof Role];
 
 export const TeamCode = {
+  MEDICAL: "MEDICAL",
   NS: "NS",
   STROKE: "STROKE",
   SURGICAL: "SURGICAL",
@@ -19,6 +20,7 @@ export type TeamCode = typeof TeamCode[keyof typeof TeamCode];
 
 /** UI display name — internal code PEDS displayed as Paedi */
 export const TEAM_LABEL: Record<TeamCode, string> = {
+  MEDICAL: "Medical",
   NS: "NS",
   STROKE: "Stroke",
   SURGICAL: "Surgical",
@@ -26,7 +28,7 @@ export const TEAM_LABEL: Record<TeamCode, string> = {
   PEDS: "Paedi",
 };
 
-export const TEAM_ORDER: TeamCode[] = ["NS", "STROKE", "SURGICAL", "ORTHO", "PEDS"];
+export const TEAM_ORDER: TeamCode[] = ["MEDICAL", "NS", "STROKE", "SURGICAL", "ORTHO", "PEDS"];
 
 export const S1Specialty = {
   MEDICAL: "Medical",
@@ -48,6 +50,7 @@ export const S1_SPECIALTY_OPTIONS: S1Specialty[] = [
 ];
 
 export const S1_SPECIALTY_TEAM: Partial<Record<S1Specialty, TeamCode>> = {
+  Medical: TeamCode.MEDICAL,
   NS: TeamCode.NS,
   Surgical: TeamCode.SURGICAL,
   Ortho: TeamCode.ORTHO,

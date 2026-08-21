@@ -51,6 +51,7 @@ const SLOT_TIME: Record<Exclude<SlotCode, "S1">, string> = {
 };
 
 const TEAM_TAG_CLASS: Record<TeamCode, string> = {
+  MEDICAL: "border-emerald-200 bg-emerald-50 text-emerald-800",
   NS: "border-teal-200 bg-teal-50 text-teal-800",
   STROKE: "border-violet-200 bg-violet-50 text-violet-800",
   SURGICAL: "border-amber-200 bg-amber-50 text-amber-800",
@@ -174,12 +175,8 @@ export function CalendarRosterClient({
             {calendar.days.map((day, index) => {
               const firstOffset = index === 0 ? (new Date(`${day.date}T00:00:00.000Z`).getUTCDay() + 6) % 7 : 0;
               return (
-                <button
+                <div
                   key={day.date}
-                  onClick={() => {
-                    setSelectedDate(day.date);
-                    setEndDate(day.date);
-                  }}
                   style={{ gridColumnStart: index === 0 ? firstOffset + 1 : undefined }}
                   className={`min-h-[112px] rounded-lg border p-2 text-left transition ${
                     selectedDate === day.date
@@ -190,7 +187,17 @@ export function CalendarRosterClient({
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold">{day.day}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedDate(day.date);
+                        setEndDate(day.date);
+                      }}
+                      className="text-sm font-semibold hover:text-cyan-700"
+                      aria-label={`Select ${day.date} for leave editing`}
+                    >
+                      {day.day}
+                    </button>
                     {day.leaves.length > 0 && (
                       <span className="badge bg-rose-100 text-rose-700">{day.leaves.length}</span>
                     )}
@@ -210,7 +217,7 @@ export function CalendarRosterClient({
                     ))}
                     {day.leaves.length > 3 && <div className="text-[11px] text-slate-400">+{day.leaves.length - 3} more</div>}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>

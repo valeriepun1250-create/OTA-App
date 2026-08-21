@@ -12,6 +12,7 @@ const TASKS = [
 ];
 
 const TEAMS = [
+  { code: "MEDICAL"  as const, name: "Medical",       weight: 0 },
   { code: "NS"       as const, name: "Neuro Surgery", weight: 3.5 },
   { code: "STROKE"   as const, name: "Stroke",        weight: 4 },
   { code: "SURGICAL" as const, name: "Surgical",      weight: 2 },

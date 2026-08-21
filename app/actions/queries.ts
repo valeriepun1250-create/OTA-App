@@ -46,13 +46,9 @@ function getHongKongDateTimeParts(date = new Date()) {
 }
 
 async function cleanupExpiredS1TasksForReads() {
-  const now = getHongKongDateTimeParts();
-  const today = toDate(now.dateStr);
+  const createdBefore = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   await prisma.assignment.deleteMany({
-    where:
-      now.hhmm >= "23:59"
-        ? { slot: "S1", date: { lte: today } }
-        : { slot: "S1", date: { lt: today } },
+    where: { slot: "S1", createdAt: { lt: createdBefore } },
   });
 }
 
@@ -128,7 +124,7 @@ export async function getDailyAttendance(dateStr: string) {
 /** Get current Team weight settings — dynamic from DB, editable on attendance page */
 export async function getTeamWeights(): Promise<Record<TeamCode, number>> {
   const teams = await prisma.team.findMany();
-  const result = {} as Record<TeamCode, number>;
+  const result = Object.fromEntries(TEAM_ORDER.map((code) => [code, 0])) as Record<TeamCode, number>;
   for (const t of teams) result[t.code as TeamCode] = t.weight;
   return result;
 }
@@ -193,7 +189,7 @@ export async function getDailyTeamUsage(dateStr: string): Promise<Record<TeamCod
   return usage as Record<TeamCode, { am: number; pm: number }>;
 }
 
-/** Get all S1 tasks for the day (including pending and dispatched) — for therapist assignment page */
+/** Get all retained S1 tasks for the selected date — for therapist assignment page */
 export async function getDailyTaskRequests(dateStr: string) {
   await cleanupExpiredS1TasksForReads();
   const date = toDate(dateStr);
@@ -595,7 +591,7 @@ export async function getDistributionBoard(dateStr: string) {
 
   // Structure: team → slot → list of assistant names
   const board: Record<string, Record<string, { id: string; name: string; homeTeam: TeamCode | null }[]>> = {};
-  for (const t of ["NS", "STROKE", "SURGICAL", "ORTHO", "PEDS"] as TeamCode[]) {
+  for (const t of TEAM_ORDER) {
     board[t] = { S2: [], S3: [], S4: [], S5: [] };
   }
   for (const r of rows) {

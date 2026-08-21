@@ -17,7 +17,7 @@ import {
   dispatchTasksByLocation,
 } from "@/lib/allocation";
 import { getCurrentUser, getTeamWeights } from "./queries";
-import { S1_SPECIALTY_OPTIONS, TEAM_ORDER, type S1Specialty, type TeamCode } from "@/types/db-enums";
+import { S1_SPECIALTY_OPTIONS, TEAM_LABEL, TEAM_ORDER, type S1Specialty, type TeamCode } from "@/types/db-enums";
 import { AssignmentStatus, AttendanceStatus, Role, type SlotCode } from "@/types/db-enums";
 import { revalidatePath } from "next/cache";
 
@@ -60,6 +60,29 @@ function addDays(date: Date, days: number): Date {
 function isWeekday(date: Date): boolean {
   const day = date.getUTCDay();
   return day >= 1 && day <= 5;
+}
+
+/**
+ * If attendance changes after S1 tasks were assigned, return unfinished S1
+ * tasks to the pending pool. Completed tasks remain in history.
+ */
+async function releaseUnavailableS1Tasks(
+  date: Date,
+  staffId: string,
+  status: AttendanceStatus,
+  note: string | null
+) {
+  if (isAvailableForSlot(status, note, "S1")) return;
+
+  await prisma.assignment.updateMany({
+    where: {
+      date,
+      slot: "S1",
+      assistantId: staffId,
+      status: { notIn: [AssignmentStatus.DONE, AssignmentStatus.CANCELLED] },
+    },
+    data: { assistantId: null, dispatchedAt: null },
+  });
 }
 
 function normalizeS1Specialty(input: string | null | undefined): S1Specialty {
@@ -113,6 +136,7 @@ export async function setAttendance(args: {
     create: { date, staffId: args.staffId, status: args.status, note },
     update: { status: args.status, note },
   });
+  await releaseUnavailableS1Tasks(date, args.staffId, args.status, note);
   const existingGeneratedRows = await prisma.assignment.count({
     where: { date, slot: { in: ["S2", "S3", "S4", "S5"] } },
   });
@@ -131,17 +155,24 @@ export async function setAttendanceBatch(args: {
 }) {
   await requireManageAttendance();
   const date = toDate(args.dateStr);
+  const notesByStaff = new Map<string, string | null>();
   await prisma.$transaction(
     args.updates.map((u) => {
       const note = u.status === AttendanceStatus.OTHER
         ? encodeUnavailableSlots(u.unavailableSlots ?? [])
         : null;
+      notesByStaff.set(u.staffId, note);
       return prisma.attendance.upsert({
         where: { date_staffId: { date, staffId: u.staffId } },
         create: { date, staffId: u.staffId, status: u.status, note },
         update: { status: u.status, note },
       });
     })
+  );
+  await Promise.all(
+    args.updates.map((u) =>
+      releaseUnavailableS1Tasks(date, u.staffId, u.status, notesByStaff.get(u.staffId) ?? null)
+    )
   );
   const existingGeneratedRows = await prisma.assignment.count({
     where: { date, slot: { in: ["S2", "S3", "S4", "S5"] } },
@@ -198,6 +229,17 @@ export async function setCalendarLeave(args: {
     )
   );
 
+  await Promise.all(
+    dates.map((date) =>
+      releaseUnavailableS1Tasks(
+        date,
+        args.staffId,
+        statusForLeaveDuration(args.duration),
+        encodeAttendanceNote({ unavailableSlots })
+      )
+    )
+  );
+
   for (const date of dates) {
     const existingGeneratedRows = await prisma.assignment.count({
       where: { date, slot: { in: ["S2", "S3", "S4", "S5"] } },
@@ -213,19 +255,16 @@ export async function setCalendarLeave(args: {
   revalidatePath(`/assistant/${args.staffId}`);
 }
 
-const S1_DAILY_DELETE_CUTOFF = "23:59";
+const S1_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * S1 tasks expire at 23:59 Hong Kong time.
- * This is opportunistic cleanup: it runs when the app/server is used, not from a background cron.
+ * S1 task creation closes at 23:59 Hong Kong time, but stored history is
+ * retained for seven days from creation. Cleanup is opportunistic: it runs
+ * when the app/server is used, not from a background cron.
  */
 export async function cleanupExpiredS1Tasks() {
-  const now = getHongKongDateTimeParts();
-  const today = toDate(now.dateStr);
-  const where =
-    now.hhmm >= S1_DAILY_DELETE_CUTOFF
-      ? { slot: "S1", date: { lte: today } }
-      : { slot: "S1", date: { lt: today } };
+  const createdBefore = new Date(Date.now() - S1_HISTORY_RETENTION_MS);
+  const where = { slot: "S1", createdAt: { lt: createdBefore } };
 
   const result = await prisma.assignment.deleteMany({ where });
   if (result.count > 0) {
@@ -312,7 +351,7 @@ export async function assignS1TaskToAssistant(args: {
 
   const assistant = await prisma.staff.findUnique({
     where: { id: args.assistantId },
-    select: { id: true, role: true, active: true },
+    select: { id: true, role: true, active: true, defaultStatus: true },
   });
   if (!assistant || assistant.role !== "ASSISTANT" || !assistant.active) {
     throw new Error("Assistant is not available");
@@ -323,7 +362,7 @@ export async function assignS1TaskToAssistant(args: {
     select: { status: true, note: true },
   });
   if (!isAvailableForSlot(
-    (attendance?.status ?? null) as AttendanceStatus | null,
+    (attendance?.status ?? assistant.defaultStatus) as AttendanceStatus,
     attendance?.note ?? null,
     "S1"
   )) {
@@ -408,7 +447,7 @@ export async function dispatchPendingTasks(dateStr: string) {
 
   const onDuty = assistants.filter((a) =>
     isAvailableForSlot(
-      (attendanceByStaff.get(a.id)?.status ?? null) as AttendanceStatus | null,
+      (attendanceByStaff.get(a.id)?.status ?? a.defaultStatus) as AttendanceStatus,
       attendanceByStaff.get(a.id)?.note ?? null,
       "S1"
     )
@@ -586,9 +625,10 @@ export async function updateTeamWeights(weights: Record<TeamCode, number>) {
   await requireManageAttendance();
   await prisma.$transaction(
     TEAM_ORDER.map((code) =>
-      prisma.team.update({
+      prisma.team.upsert({
         where: { code },
-        data: { weight: weights[code] },
+        update: { weight: weights[code] },
+        create: { code, name: TEAM_LABEL[code], weight: weights[code] },
       })
     )
   );

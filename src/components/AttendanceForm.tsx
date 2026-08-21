@@ -200,7 +200,7 @@ export function AttendanceForm({
           <span className="badge bg-slate-100 text-slate-700">Total Weight {totalWeight}</span>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {TEAM_ORDER.map((code) => (
             <label key={code} className="block">
               <span className="text-xs font-semibold text-slate-600">{TEAM_LABEL[code]}</span>
@@ -210,7 +210,7 @@ export function AttendanceForm({
                 min="0"
                 value={weights[code]}
                 onChange={(e) => setWeights((w) => ({ ...w, [code]: parseFloat(e.target.value) || 0 }))}
-                className="input-base"
+                className="input-base h-9 px-2 text-sm"
               />
             </label>
           ))}

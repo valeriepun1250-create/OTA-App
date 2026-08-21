@@ -3,10 +3,11 @@
 // AM = S2 + S3 (2 slots each), PM = S4 + S5 (2 slots each)
 
 // Type-only imports — allocation.ts avoids importing @prisma/client runtime values for easier unit testing
-import { S1_SPECIALTY_TEAM, type S1Specialty } from "@/types/db-enums";
+import { S1_SPECIALTY_TEAM, TEAM_ORDER, type S1Specialty } from "@/types/db-enums";
 import type { TeamCode, SessionPool, WardCluster, SlotCode } from "@/types/db-enums";
 
 export const TEAM_WEIGHTS: Record<TeamCode, number> = {
+  MEDICAL: 0,
   NS: 3.5,
   STROKE: 4,
   SURGICAL: 2,
@@ -14,7 +15,7 @@ export const TEAM_WEIGHTS: Record<TeamCode, number> = {
   PEDS: 2,
 };
 
-export const TOTAL_WEIGHT = Object.values(TEAM_WEIGHTS).reduce((a, b) => a + b, 0); // 15.5
+export const TOTAL_WEIGHT = Object.values(TEAM_WEIGHTS).reduce((a, b) => a + b, 0);
 
 export const SLOTS_PER_POOL = 2; // AM: S2+S3, PM: S4+S5
 
@@ -283,6 +284,16 @@ export interface DispatchCandidate {
   homeTeam?: TeamCode | null;
 }
 
+/** Normalize a ward to its ward group (room + floor), ignoring bed suffixes. */
+function wardGroupKey(ward: string): string {
+  try {
+    const parsed = parseWard(ward);
+    return `${parsed.room}${parsed.floor}`;
+  } catch {
+    return ward.trim().toUpperCase();
+  }
+}
+
 export function dispatchTasksByLocation(
   tasks: PendingTask[],
   candidates: DispatchCandidate[]
@@ -314,6 +325,11 @@ export function dispatchTasksByLocation(
     const ranked = pool
       .map((c) => {
         const myWards = wards.get(c.id)!;
+        const targetGroup = wardGroupKey(task.ward);
+        const hasExactWard = myWards.some((ward) => wardGroupKey(ward) === targetGroup);
+        // Keep exact wards together. If no exact ward exists, prefer an
+        // assistant with no S1 ward group yet before reusing another ward.
+        const wardGroupRank = hasExactWard ? 0 : myWards.length === 0 ? 1 : 2;
         let tier: LocationTier = LocationTier.CROSS_CLUSTER;
         if (target && myWards.length > 0) {
           for (const w of myWards) {
@@ -324,9 +340,15 @@ export function dispatchTasksByLocation(
           }
         }
         const specialtyRank = hasPreferredTeamOnDuty && c.homeTeam !== preferredTeam ? 1 : 0;
-        return { id: c.id, tier, score: score.get(c.id)!, specialtyRank };
+        return { id: c.id, tier, score: score.get(c.id)!, specialtyRank, wardGroupRank };
       })
-      .sort((a, b) => a.specialtyRank - b.specialtyRank || a.tier - b.tier || a.score - b.score);
+      .sort(
+        (a, b) =>
+          a.specialtyRank - b.specialtyRank ||
+          a.wardGroupRank - b.wardGroupRank ||
+          a.tier - b.tier ||
+          a.score - b.score
+      );
 
     const winner = ranked[0];
     result.push({ taskId: task.id, assistantId: winner.id });
@@ -341,7 +363,7 @@ export function dispatchTasksByLocation(
 // §S2-S5 Auto-distribution (autoDistributeS2S5)
 //
 // Rules:
-// - S2-S5 auto-filled by system based on 5 team weights (3.5:4:2:4:2)
+// - S2-S5 auto-filled by system based on configurable team weights
 // - AM pool (S2+S3) and PM pool (S4+S5) allocated separately
 // - Each pool total slot = 2 × assistants on duty for that pool
 // - Uses Hamilton largest remainder method (LRM) to ensure integer sum equals total slots
@@ -367,8 +389,6 @@ export interface AutoDistAssignment {
   team: TeamCode;
 }
 
-const TEAMS_ORDER: TeamCode[] = ["NS", "STROKE", "SURGICAL", "ORTHO", "PEDS"];
-
 /** Hamilton largest remainder method: allocate totalSlots to teams proportionally by weight, ensuring integer sum. */
 export function hamiltonAllocate(
   totalSlots: number,
@@ -379,13 +399,13 @@ export function hamiltonAllocate(
   const floors: Record<TeamCode, number> = {} as Record<TeamCode, number>;
   const remainders: { team: TeamCode; r: number }[] = [];
 
-  for (const t of TEAMS_ORDER) {
+  for (const t of TEAM_ORDER) {
     raw[t] = (totalSlots * weights[t]) / totalWeight;
     floors[t] = Math.floor(raw[t]);
     remainders.push({ team: t, r: raw[t] - floors[t] });
   }
-  let used = TEAMS_ORDER.reduce((s, t) => s + floors[t], 0);
-  // Allocate remaining slots to teams with largest remainder (stable sort: same remainder → TEAMS_ORDER)
+  let used = TEAM_ORDER.reduce((s, t) => s + floors[t], 0);
+  // Allocate remaining slots to teams with largest remainder.
   remainders.sort((a, b) => b.r - a.r);
   for (let i = 0; used < totalSlots && i < remainders.length; i++) {
     floors[remainders[i].team]++;
@@ -410,7 +430,7 @@ function dominantCluster(s1Wards: string[]): WardCluster | null {
 }
 
 /** Team → primary service cluster mapping (hospital rules; heuristic used here) */
-const TEAM_HOME_CLUSTER: Record<TeamCode, WardCluster> = {
+const TEAM_HOME_CLUSTER: Partial<Record<TeamCode, WardCluster>> = {
   NS: "CLUSTER_1",
   STROKE: "CLUSTER_1",
   SURGICAL: "CLUSTER_2",
@@ -439,7 +459,7 @@ function pickTeamForAssistant(
   needed: number,                         // Default 2 (two slots per pool); <1 means split
   options?: { preferHomeTeamFirst?: boolean }
 ): TeamCode | null {
-  const candidates = TEAMS_ORDER.filter((t) => remaining[t] >= 1);
+  const candidates = TEAM_ORDER.filter((t) => remaining[t] >= 1);
   if (candidates.length === 0) return null;
   const preferHomeTeamFirst = !!options?.preferHomeTeamFirst;
 
@@ -495,13 +515,13 @@ export function splitTargetAcrossPools(
   const pm: Record<TeamCode, number> = {} as Record<TeamCode, number>;
 
   if (total === 0) {
-    for (const t of TEAMS_ORDER) { am[t] = 0; pm[t] = 0; }
+    for (const t of TEAM_ORDER) { am[t] = 0; pm[t] = 0; }
     return { am, pm };
   }
 
   const remainders: { team: TeamCode; r: number }[] = [];
   let floorSum = 0;
-  for (const t of TEAMS_ORDER) {
+  for (const t of TEAM_ORDER) {
     const raw = (teamTarget[t] * amCap) / total;
     am[t] = Math.floor(raw);
     floorSum += am[t];
@@ -517,7 +537,7 @@ export function splitTargetAcrossPools(
       extras--;
     }
   }
-  for (const t of TEAMS_ORDER) pm[t] = teamTarget[t] - am[t];
+  for (const t of TEAM_ORDER) pm[t] = teamTarget[t] - am[t];
   return { am, pm };
 }
 
@@ -661,10 +681,10 @@ export function rebalanceAllocations(
     const poolRows = result.filter((r) => pool.slotMatch(r.slot));
 
     // Safety: max 2 × team count iterations to prevent infinite loops in edge cases
-    for (let iter = 0; iter < TEAMS_ORDER.length * 2; iter++) {
+    for (let iter = 0; iter < TEAM_ORDER.length * 2; iter++) {
       // Count actual slots per team
       const counts: Record<TeamCode, number> = {} as Record<TeamCode, number>;
-      for (const t of TEAMS_ORDER) counts[t] = 0;
+      for (const t of TEAM_ORDER) counts[t] = 0;
       for (const r of poolRows) counts[r.team]++;
 
       // Find most over / most under
@@ -672,7 +692,7 @@ export function rebalanceAllocations(
       let under: TeamCode | null = null;
       let overExcess = 0;
       let underDeficit = 0;
-      for (const t of TEAMS_ORDER) {
+      for (const t of TEAM_ORDER) {
         const diff = counts[t] - pool.target[t];
         if (diff >= 1 && diff > overExcess) { over = t; overExcess = diff; }
         if (diff <= -1 && diff < underDeficit) { under = t; underDeficit = diff; }

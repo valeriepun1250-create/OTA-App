@@ -192,18 +192,18 @@ describe("hamiltonAllocate", () => {
 
   it("known case: 20 slots, weights 3.5:4:2:4:2 → NS=4, Stroke=5, Surgical=3, Ortho=5, Peds=3", () => {
     const r = hamiltonAllocate(20, TEAM_WEIGHTS);
-    expect(r).toEqual({ NS: 4, STROKE: 5, SURGICAL: 3, ORTHO: 5, PEDS: 3 });
+    expect(r).toEqual({ MEDICAL: 0, NS: 4, STROKE: 5, SURGICAL: 3, ORTHO: 5, PEDS: 3 });
   });
 
   it("known case: 10 slots → NS=2, Stroke=3, Surgical=1, Ortho=3, Peds=1", () => {
     const r = hamiltonAllocate(10, TEAM_WEIGHTS);
-    expect(r).toEqual({ NS: 2, STROKE: 3, SURGICAL: 1, ORTHO: 3, PEDS: 1 });
+    expect(r).toEqual({ MEDICAL: 0, NS: 2, STROKE: 3, SURGICAL: 1, ORTHO: 3, PEDS: 1 });
   });
 
   it("equal weights → even distribution", () => {
-    const equal = { NS: 1, STROKE: 1, SURGICAL: 1, ORTHO: 1, PEDS: 1 };
+    const equal = { MEDICAL: 0, NS: 1, STROKE: 1, SURGICAL: 1, ORTHO: 1, PEDS: 1 };
     const r = hamiltonAllocate(10, equal);
-    expect(Object.values(r)).toEqual([2, 2, 2, 2, 2]);
+    expect(Object.values(r)).toEqual([0, 2, 2, 2, 2, 2]);
   });
 
   it("never returns negative", () => {
@@ -216,7 +216,7 @@ describe("hamiltonAllocate", () => {
 // splitTargetAcrossPools — split full-day target into AM/PM
 // ─────────────────────────────────────────────
 describe("splitTargetAcrossPools", () => {
-  const target = { NS: 4, STROKE: 5, SURGICAL: 3, ORTHO: 5, PEDS: 3 };
+  const target = { MEDICAL: 0, NS: 4, STROKE: 5, SURGICAL: 3, ORTHO: 5, PEDS: 3 };
 
   it("AM/PM equal capacity (10/10) → symmetric split, sum conserved", () => {
     const { am, pm } = splitTargetAcrossPools(target, 10, 10);
@@ -453,7 +453,7 @@ describe("autoDistributeS2S5", () => {
       // Expected target = totalSlots × weight[t] / Σ weights
       const totalAM = N * 2;
       const totalPM = N * 2;
-      const w = { NS: 3.5, STROKE: 4, SURGICAL: 2, ORTHO: 4, PEDS: 2 };
+      const w = { MEDICAL: 0, NS: 3.5, STROKE: 4, SURGICAL: 2, ORTHO: 4, PEDS: 2 };
       const total = 15.5;
 
       const countByPoolTeam: Record<string, Record<string, number>> = {
@@ -487,8 +487,8 @@ describe("rebalanceAllocations", () => {
     ];
     const result = rebalanceAllocations(
       input,
-      { NS: 2, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
-      { NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 2, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
     );
     expect(result).toEqual(input);
   });
@@ -503,8 +503,8 @@ describe("rebalanceAllocations", () => {
     ];
     const result = rebalanceAllocations(
       input,
-      { NS: 2, STROKE: 2, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
-      { NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 2, STROKE: 2, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
     );
     const counts: Record<string, number> = {};
     for (const r of result) counts[r.team] = (counts[r.team] ?? 0) + 1;
@@ -520,8 +520,8 @@ describe("rebalanceAllocations", () => {
     ];
     const result = rebalanceAllocations(
       input,
-      { NS: 1, STROKE: 1, SURGICAL: 1, ORTHO: 0, PEDS: 0 },
-      { NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 1, STROKE: 1, SURGICAL: 1, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
     );
     expect(result).toHaveLength(input.length);
   });
@@ -535,8 +535,8 @@ describe("rebalanceAllocations", () => {
     ];
     const result = rebalanceAllocations(
       input,
-      { NS: 2, STROKE: 1, SURGICAL: 1, ORTHO: 0, PEDS: 0 },
-      { NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 2, STROKE: 1, SURGICAL: 1, ORTHO: 0, PEDS: 0 },
+      { MEDICAL: 0, NS: 0, STROKE: 0, SURGICAL: 0, ORTHO: 0, PEDS: 0 },
     );
     const seen = new Set<string>();
     for (const r of result) {
@@ -613,6 +613,31 @@ describe("dispatchTasksByLocation", () => {
       ]
     );
     expect(result[0].assistantId).toBe("cluster1");
+  });
+
+  it("keeps tasks from the exact same ward with the same assistant", () => {
+    const result = dispatchTasksByLocation(
+      [
+        { id: "e8-1", ward: "E8/1", score: 1 },
+        { id: "e8-2", ward: "E8/19", score: 1 },
+      ],
+      [
+        { id: "first", currentWards: [], currentScore: 0 },
+        { id: "second", currentWards: [], currentScore: 0 },
+      ]
+    );
+    expect(result.map((assignment) => assignment.assistantId)).toEqual(["first", "first"]);
+  });
+
+  it("does not group a new ward with another ward when an empty assistant is available", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "g8", ward: "G8/1", score: 1 }],
+      [
+        { id: "e8-worker", currentWards: ["E8/1"], currentScore: 0 },
+        { id: "empty", currentWards: [], currentScore: 0 },
+      ]
+    );
+    expect(result[0].assistantId).toBe("empty");
   });
 
   it("specialty task prioritizes matching team before location", () => {
