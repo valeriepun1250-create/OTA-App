@@ -58,9 +58,69 @@ export type FirebaseAssignment = {
 const path = {
   staff: "staff",
   teams: "teams",
+  migrations: "system/migrations",
   attendance: (date: string) => `attendance/${date}`,
   assignments: (date: string) => `assignments/${date}`,
 };
+
+const teams: Record<string, { name: string; weight: number }> = {
+  MEDICAL: { name: "Medical", weight: 0 },
+  NS: { name: "Neuro Surgery", weight: 3.5 },
+  STROKE: { name: "Stroke", weight: 4 },
+  SURGICAL: { name: "Surgical", weight: 2 },
+  ORTHO: { name: "Orthopaedic", weight: 4 },
+  PEDS: { name: "Paediatrics", weight: 2 },
+};
+
+type SeedPerson = readonly [
+  staffNo: string,
+  name: string,
+  role: string,
+  team: TeamCode | null,
+  canManageAttendance: boolean,
+  defaultStatus: AttendanceStatus,
+  active?: boolean,
+];
+
+const seedPeople: readonly SeedPerson[] = [
+  ["ADM001", "Admin", "ADMIN", null, true, "PRESENT"],
+  ["T001", "Jamie", "THERAPIST", "NS", true, "PRESENT"],
+  ["T002", "Taylor", "THERAPIST", "STROKE", true, "PRESENT"],
+  ["T003", "Morgan", "THERAPIST", "ORTHO", false, "PRESENT"],
+  ["A001", "Pinky", "ASSISTANT", "ORTHO", false, "LEAVE"],
+  ["A002", "Jacky", "ASSISTANT", "ORTHO", false, "LEAVE"],
+  ["A003", "Joanne", "ASSISTANT", "STROKE", false, "PRESENT"],
+  ["A005", "Christine", "ASSISTANT", "NS", false, "PRESENT"],
+  ["A006", "Candy", "ASSISTANT", "NS", false, "PRESENT"],
+  ["A007", "Agnes", "ASSISTANT", "SURGICAL", false, "PRESENT"],
+  ["A008", "Michelle", "ASSISTANT", "PEDS", false, "PRESENT"],
+  ["A009", "Hei", "ASSISTANT", "ORTHO", false, "LEAVE"],
+  ["A010", "Ken", "ASSISTANT", "STROKE", false, "LEAVE"],
+];
+
+const placeholderAssistantNames: Record<string, string> = {
+  a001: "Amy",
+  a002: "Ben",
+  a003: "Chris",
+  a004: "Diana",
+  a005: "Evan",
+  a006: "Fiona",
+  a007: "Grace",
+};
+
+function staffRecord(person: SeedPerson): FirebaseStaff {
+  const [staffNo, name, role, team, canManageAttendance, defaultStatus, active = true] = person;
+  return {
+    id: staffNo.toLowerCase(),
+    staffNo,
+    name,
+    role,
+    team,
+    active,
+    canManageAttendance,
+    defaultStatus,
+  };
+}
 
 function objectValues<T>(snapshot: DataSnapshot): T[] {
   const value = snapshot.val();
@@ -158,48 +218,41 @@ export async function updateStaff(staffId: string, changes: Partial<FirebaseStaf
   await update(ref(firebaseDb, `${path.staff}/${staffId}`), changes);
 }
 
-/** Seed the prototype database once from the original local demo roster. */
+/** Seed an empty database, then apply each non-destructive data migration once. */
 export async function ensureFirebasePrototypeSeed() {
   await ensureAnonymousAuth();
-  const staffSnapshot = await get(ref(firebaseDb, path.staff));
-  if (staffSnapshot.exists()) return false;
-
-  const teams: Record<string, { name: string; weight: number }> = {
-    MEDICAL: { name: "Medical", weight: 0 },
-    NS: { name: "Neuro Surgery", weight: 3.5 },
-    STROKE: { name: "Stroke", weight: 4 },
-    SURGICAL: { name: "Surgical", weight: 2 },
-    ORTHO: { name: "Orthopaedic", weight: 4 },
-    PEDS: { name: "Paediatrics", weight: 2 },
-  };
-  const people = [
-    ["ADM001", "Admin", "ADMIN", null, true, "PRESENT"],
-    ["T001", "Jamie", "THERAPIST", "NS", true, "PRESENT"],
-    ["T002", "Taylor", "THERAPIST", "STROKE", true, "PRESENT"],
-    ["T003", "Morgan", "THERAPIST", "ORTHO", false, "PRESENT"],
-    ["A001", "Amy", "ASSISTANT", "NS", false, "PRESENT"],
-    ["A002", "Ben", "ASSISTANT", "STROKE", false, "PRESENT"],
-    ["A003", "Chris", "ASSISTANT", "ORTHO", false, "PRESENT"],
-    ["A004", "Diana", "ASSISTANT", "PEDS", false, "PRESENT"],
-    ["A005", "Evan", "ASSISTANT", "SURGICAL", false, "PRESENT"],
-    ["A006", "Fiona", "ASSISTANT", "STROKE", false, "PRESENT"],
-    ["A007", "Grace", "ASSISTANT", "ORTHO", false, "PM_ONLY"],
-  ] as const;
+  const [staffSnapshot, migrationSnapshot] = await Promise.all([
+    get(ref(firebaseDb, path.staff)),
+    get(ref(firebaseDb, `${path.migrations}/realPcaRosterV1`)),
+  ]);
   const changes: Record<string, unknown> = {};
-  for (const [staffNo, name, role, team, canManageAttendance, defaultStatus] of people) {
-    const id = staffNo.toLowerCase();
-    changes[`staff/${id}`] = {
-      id,
-      staffNo,
-      name,
-      role,
-      team,
-      active: true,
-      canManageAttendance,
-      defaultStatus,
-    };
+
+  if (!staffSnapshot.exists()) {
+    for (const person of seedPeople) {
+      const record = staffRecord(person);
+      changes[`staff/${record.id}`] = record;
+    }
+    for (const [code, data] of Object.entries(teams)) changes[`teams/${code}`] = data;
+  } else if (!migrationSnapshot.exists()) {
+    const current = (staffSnapshot.val() ?? {}) as Record<string, FirebaseStaff>;
+    for (const person of seedPeople.filter((row) => row[2] === "ASSISTANT")) {
+      const record = staffRecord(person);
+      const existing = current[record.id];
+      if (!existing || existing.name === placeholderAssistantNames[record.id]) {
+        changes[`staff/${record.id}`] = record;
+      }
+    }
+
+    const oldA004 = current.a004;
+    if (oldA004?.name === placeholderAssistantNames.a004) {
+      changes["staff/a004/active"] = false;
+    }
   }
-  for (const [code, data] of Object.entries(teams)) changes[`teams/${code}`] = data;
+
+  if (!migrationSnapshot.exists()) {
+    changes[`${path.migrations}/realPcaRosterV1`] = Date.now();
+  }
+  if (Object.keys(changes).length === 0) return false;
   await update(ref(firebaseDb), changes);
   return true;
 }

@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { AssistantDashboardClient } from "@/components/AssistantDashboardClient";
 
 export function generateStaticParams() {
-  return ["a001", "a002", "a003", "a004", "a005", "a006", "a007"].map((id) => ({ id }));
+  return ["a001", "a002", "a003", "a005", "a006", "a007", "a008", "a009", "a010"].map((id) => ({ id }));
 }
 
 export default function AssistantDashboardPage({ params }: { params: { id: string } }) {
