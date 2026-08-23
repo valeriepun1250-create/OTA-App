@@ -3,25 +3,21 @@
 import { Suspense, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import {
-  getDailyQuotas,
-  getDailyTeamUsage,
-  getDailyTaskRequests,
-  getDistributionBoard,
-  getS1AssignmentPool,
-} from "@/app/actions/queries";
-import {
-  assignS1TaskToAssistant,
-  cleanupExpiredS1Tasks,
-  createTaskRequest,
-  deleteS1Task,
-  dispatchPendingTasks,
-  generateAutoSchedule,
-  updateS1TaskContent,
-} from "@/app/actions/mutations";
 import { S1_SPECIALTY_OPTIONS, TEAM_LABEL, TEAM_ORDER, type TeamCode } from "@/types/db-enums";
 import { dispatchTasksByLocation, S1_MAX_POINTS, type TeamPoolQuota } from "@/lib/allocation";
 import { getTodayInHongKong } from "@/lib/date";
+import {
+  assignFirebaseS1Task,
+  cleanupFirebaseS1Tasks,
+  createFirebaseS1Task,
+  deleteFirebaseS1Task,
+  dispatchFirebaseS1Tasks,
+  getFirebaseS1Pool,
+  getFirebaseS1Tasks,
+  listenToFirebaseS1,
+  updateFirebaseS1Content,
+} from "@/lib/firebase-s1";
+import { generateFirebaseAutoSchedule, getFirebasePcaState } from "@/lib/firebase-pca";
 
 type Mode = "S1" | "PCA";
 const MODE_OPTIONS: { value: Mode; label: string }[] = [
@@ -238,7 +234,7 @@ function AssignPageContent() {
 
   const refreshS1 = () => {
     startTransition(async () => {
-      await cleanupExpiredS1Tasks();
+      await cleanupFirebaseS1Tasks();
       await refreshS1Data();
     });
   };
@@ -247,8 +243,8 @@ function AssignPageContent() {
   // another therapist's submissions and assignments appear without a reload.
   const refreshS1Data = async () => {
     const [list, pool] = await Promise.all([
-      getDailyTaskRequests(dateStr),
-      getS1AssignmentPool(dateStr),
+      getFirebaseS1Tasks(dateStr),
+      getFirebaseS1Pool(dateStr),
     ]);
     setTasks(list);
     setS1AssignmentPool(pool as S1AssignmentPoolRow[]);
@@ -256,14 +252,10 @@ function AssignPageContent() {
 
   const refreshS2S5 = () => {
     startTransition(async () => {
-      const [q, u, b] = await Promise.all([
-        getDailyQuotas(dateStr),
-        getDailyTeamUsage(dateStr),
-        getDistributionBoard(dateStr),
-      ]);
-      setQuotas(q);
-      setUsage(u);
-      setBoard(b.board);
+      const state = await getFirebasePcaState(dateStr);
+      setQuotas(state.quotas);
+      setUsage(state.usage);
+      setBoard(state.board);
     });
   };
 
@@ -277,19 +269,11 @@ function AssignPageContent() {
 
   useEffect(() => {
     if (!isS1) return;
-
-    const poll = () => {
-      if (document.visibilityState !== "visible" || pending) return;
-      void refreshS1Data();
-    };
-    const interval = window.setInterval(poll, 5000);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") poll();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    const unsubscribe = listenToFirebaseS1(dateStr, () => {
+      if (!pending) void refreshS1Data();
+    }, (error) => setTaskError(error.message));
     return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      unsubscribe();
     };
   }, [dateStr, isS1, pending]);
 
@@ -304,13 +288,13 @@ function AssignPageContent() {
     startTransition(async () => {
       try {
         setTaskError("");
-        await createTaskRequest({
-          dateStr,
+        await createFirebaseS1Task({
+          date: dateStr,
           ward: form.ward.trim(),
-          initial: form.initial.trim() || undefined,
-          hnPrefix: form.hnPrefix.trim() || undefined,
-          therapistName: form.therapistName.trim() || undefined,
-          specialty: form.specialty.trim() || undefined,
+          initial: form.initial.trim(),
+          hnPrefix: form.hnPrefix.trim(),
+          therapistName: form.therapistName.trim(),
+          specialty: form.specialty.trim(),
           content: form.content.trim(),
         });
         setForm((f) => ({ ...f, ward: "", initial: "", hnPrefix: "", content: "" }));
@@ -323,7 +307,7 @@ function AssignPageContent() {
 
   const handleBatchDispatch = () => {
     startTransition(async () => {
-      await dispatchPendingTasks(dateStr);
+        await dispatchFirebaseS1Tasks(dateStr);
       refreshS1();
     });
   };
@@ -334,7 +318,7 @@ function AssignPageContent() {
     startTransition(async () => {
       try {
         setTaskError("");
-        await assignS1TaskToAssistant({ assignmentId: task.id, assistantId });
+        await assignFirebaseS1Task(dateStr, task.id, assistantId);
         setLateAssigneeByTask((current) => {
           const next = { ...current };
           delete next[task.id];
@@ -352,7 +336,7 @@ function AssignPageContent() {
     startTransition(async () => {
       try {
         setTaskError("");
-        await deleteS1Task(task.id);
+        await deleteFirebaseS1Task(dateStr, task.id);
         if (editingTaskId === task.id) {
           setEditingTaskId(null);
           setEditingContent("");
@@ -374,10 +358,7 @@ function AssignPageContent() {
     startTransition(async () => {
       try {
         setTaskError("");
-        await updateS1TaskContent({
-          assignmentId: editingTaskId,
-          content: editingContent.trim(),
-        });
+        await updateFirebaseS1Content(dateStr, editingTaskId, editingContent.trim());
         setEditingTaskId(null);
         setEditingContent("");
         refreshS1();
@@ -744,7 +725,7 @@ function AssignPageContent() {
                     return;
                   }
                   startTransition(async () => {
-                    await generateAutoSchedule(dateStr);
+                    await generateFirebaseAutoSchedule(dateStr);
                     refreshS2S5();
                   });
                 }}

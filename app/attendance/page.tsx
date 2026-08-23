@@ -1,47 +1,37 @@
-import {
-  getCurrentUser,
-  getDailyAttendance,
-  getTeamWeights,
-} from "@/app/actions/queries";
+"use client";
+
+import { useEffect, useState } from "react";
 import { AttendanceForm } from "@/components/AttendanceForm";
 import { getTodayInHongKong } from "@/lib/date";
+import { getFirebaseDailyAttendance, getFirebaseTeamWeights } from "@/lib/firebase-attendance";
 
-export const dynamic = "force-dynamic"; // Ensure attendance data is re-fetched each time
+export const dynamic = "force-static";
 
-export default async function AttendancePage({
-  searchParams,
-}: {
-  searchParams: { date?: string };
-}) {
-  const user = await getCurrentUser();
+export default function AttendancePage() {
+  const [dateStr, setDateStr] = useState(getTodayInHongKong());
+  const [assistants, setAssistants] = useState<Awaited<ReturnType<typeof getFirebaseDailyAttendance>>>([]);
+  const [weights, setWeights] = useState<Awaited<ReturnType<typeof getFirebaseTeamWeights>> | null>(null);
+  const [error, setError] = useState("");
 
-  // Permission check — only canManageAttendance can enter
-  if (!user.canManageAttendance) {
-    return (
-      <main className="app-shell max-w-2xl">
-        <section className="panel border-rose-200 bg-rose-50/70">
-          <h1 className="text-xl font-bold text-rose-700">Insufficient Permissions</h1>
-          <p className="mt-2 text-sm text-slate-600">
-          Current user: <span className="font-mono">{user.name}</span> ({user.role})
-          does not have <code className="rounded bg-slate-100 px-1">canManageAttendance</code> permission.
-          Please contact the administrator.
-          </p>
-        </section>
-      </main>
-    );
-  }
+  useEffect(() => {
+    Promise.all([getFirebaseDailyAttendance(dateStr), getFirebaseTeamWeights()])
+      .then(([nextAssistants, nextWeights]) => {
+        setAssistants(nextAssistants);
+        setWeights(nextWeights);
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Firebase connection failed"));
+  }, [dateStr]);
 
-  const dateStr = searchParams.date ?? getTodayInHongKong();
-  const [assistants, weights] = await Promise.all([
-    getDailyAttendance(dateStr),
-    getTeamWeights(),
-  ]);
+  if (error) return <main className="app-shell"><section className="panel border-rose-200 bg-rose-50 text-rose-700">{error}</section></main>;
+  if (!weights) return <main className="app-shell"><section className="panel text-sm text-slate-500">Connecting to Firebase...</section></main>;
 
   return (
     <AttendanceForm
+      key={dateStr}
       initialDate={dateStr}
       initialAssistants={assistants}
       initialWeights={weights}
+      onDateChange={setDateStr}
     />
   );
 }

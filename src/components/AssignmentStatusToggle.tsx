@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import { updateAssignmentStatus } from "@/app/actions/mutations";
+import { updateAssignment } from "@/lib/firebase-data";
 import { AssignmentStatus } from "@/types/db-enums";
 
 const NEXT_STATUS: Partial<Record<AssignmentStatus, AssignmentStatus>> = {
@@ -26,11 +25,11 @@ const STATUS_STYLE: Record<AssignmentStatus, string> = {
 
 interface Props {
   assignmentId: string;
+  date: string;
   current: AssignmentStatus;
 }
 
-export function AssignmentStatusToggle({ assignmentId, current }: Props) {
-  const router = useRouter();
+export function AssignmentStatusToggle({ assignmentId, date, current }: Props) {
   const [status, setStatus] = useState<AssignmentStatus>(current);
   const [pending, startTransition] = useTransition();
   const next = NEXT_STATUS[status];
@@ -38,9 +37,8 @@ export function AssignmentStatusToggle({ assignmentId, current }: Props) {
   const handleAdvance = () => {
     if (!next) return;
     startTransition(async () => {
-      await updateAssignmentStatus({ assignmentId, status: next });
+      await updateAssignment(date, assignmentId, { status: next });
       setStatus(next);
-      router.refresh();
     });
   };
 

@@ -1,34 +1,16 @@
 /** @type {import('next').NextConfig} */
-const extraAllowedOrigins = (process.env.NEXT_SERVER_ACTIONS_ALLOWED_ORIGINS ?? "")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-
-const devAllowedOrigins = [
-  "localhost:3000",
-  "127.0.0.1:3000",
-  "*.app.github.dev",
-  "**.app.github.dev",
-  "*.preview.app.github.dev",
-  "**.preview.app.github.dev",
-  "*.githubpreview.dev",
-  "**.githubpreview.dev",
-  "*.devtunnels.ms",
-  "**.devtunnels.ms",
-  ...extraAllowedOrigins,
-];
-
 const nextConfig = {
   reactStrictMode: true,
+  output: "export",
+  trailingSlash: true,
+  basePath: process.env.GITHUB_ACTIONS ? "/OTA-App" : "",
+  assetPrefix: process.env.GITHUB_ACTIONS ? "/OTA-App/" : undefined,
   // Keep production validation/build artifacts isolated from a running dev
   // server. Sharing `.next` lets webpack runtimes reference chunks from the
   // other mode (for example, the intermittent missing `819.js` error).
-  distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
-  experimental: {
-    serverActions: {
-      allowedOrigins: devAllowedOrigins,
-    },
-  },
+  distDir: process.env.NODE_ENV === "production"
+    ? (process.env.GITHUB_ACTIONS ? "out" : ".next-prod")
+    : ".next",
 };
 
 module.exports = nextConfig;

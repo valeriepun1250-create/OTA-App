@@ -3,12 +3,12 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  setAttendanceBatch,
-  updateTeamWeights,
-  addAssistant,
-  updateAssistant,
-  deactivateAssistant,
-} from "@/app/actions/mutations";
+  setFirebaseAttendanceBatch,
+  updateFirebaseTeamWeights,
+  addFirebaseAssistant,
+  updateFirebaseAssistant,
+  deactivateFirebaseAssistant,
+} from "@/lib/firebase-attendance";
 import {
   AttendanceStatus,
   SlotCode,
@@ -30,6 +30,7 @@ interface Props {
   initialDate: string;
   initialAssistants: AssistantRow[];
   initialWeights: Record<TeamCode, number>;
+  onDateChange?: (date: string) => void;
 }
 
 const STATUS_OPTIONS: { value: AttendanceStatus; label: string }[] = [
@@ -56,6 +57,7 @@ export function AttendanceForm({
   initialDate,
   initialAssistants,
   initialWeights,
+  onDateChange,
 }: Props) {
   const router = useRouter();
   const [dateStr, setDateStr] = useState(initialDate);
@@ -89,6 +91,7 @@ export function AttendanceForm({
   }, [draft, unavailableDraft, initialAssistants]);
 
   const handleDateChange = (newDate: string) => {
+    onDateChange?.(newDate);
     router.push(`/attendance?date=${newDate}`);
     setDateStr(newDate);
   };
@@ -100,14 +103,14 @@ export function AttendanceForm({
         status,
         unavailableSlots: status === "OTHER" ? unavailableDraft[staffId] ?? [] : [],
       }));
-      await setAttendanceBatch({ dateStr, updates });
+      await setFirebaseAttendanceBatch({ date: dateStr, updates });
       router.refresh();
     });
   };
 
   const handleSaveWeights = () => {
     startTransition(async () => {
-      await updateTeamWeights(weights);
+      await updateFirebaseTeamWeights(weights);
       router.refresh();
     });
   };
@@ -115,7 +118,7 @@ export function AttendanceForm({
   const handleAddAssistant = () => {
     if (!newName.trim()) return;
     startTransition(async () => {
-      await addAssistant({ name: newName.trim(), teamCode: newTeam, defaultStatus: newDefault });
+      await addFirebaseAssistant({ name: newName.trim(), teamCode: newTeam, defaultStatus: newDefault });
       setNewName("");
       router.refresh();
     });
@@ -124,7 +127,7 @@ export function AttendanceForm({
   const handleSaveEdit = (id: string) => {
     if (!editName.trim()) return;
     startTransition(async () => {
-      await updateAssistant({ id, name: editName.trim() });
+      await updateFirebaseAssistant({ id, name: editName.trim() });
       setEditId(null);
       router.refresh();
     });
@@ -139,21 +142,21 @@ export function AttendanceForm({
       return;
     }
     startTransition(async () => {
-      await deactivateAssistant(id);
+      await deactivateFirebaseAssistant(id);
       router.refresh();
     });
   };
 
   const handleTeamChange = (id: string, code: TeamCode) => {
     startTransition(async () => {
-      await updateAssistant({ id, teamCode: code });
+      await updateFirebaseAssistant({ id, teamCode: code });
       router.refresh();
     });
   };
 
   const handleDefaultStatusChange = (id: string, status: AttendanceStatus) => {
     startTransition(async () => {
-      await updateAssistant({ id, defaultStatus: status });
+      await updateFirebaseAssistant({ id, defaultStatus: status });
       router.refresh();
     });
   };

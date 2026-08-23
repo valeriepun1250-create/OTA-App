@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { generateMonthlyAutoSchedule, setCalendarLeave } from "@/app/actions/mutations";
+import { generateFirebaseMonthlyRoster, setFirebaseCalendarLeave } from "@/lib/firebase-calendar";
 import { TEAM_LABEL, TEAM_ORDER, type SlotCode, type TeamCode } from "@/types/db-enums";
 import type { LeaveDuration, LeaveType } from "@/lib/attendance";
 
@@ -75,11 +75,13 @@ export function CalendarRosterClient({
   canEdit,
   calendar,
   roster,
+  onMonthChange,
 }: {
   monthStr: string;
   canEdit: boolean;
   calendar: { assistants: Assistant[]; days: CalendarDay[] };
   roster: RosterDay[];
+  onMonthChange?: (month: string) => void;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -110,9 +112,9 @@ export function CalendarRosterClient({
   const handleSaveLeave = () => {
     if (!staffId || endDate < selectedDate || (duration === "CUSTOM" && slots.length === 0)) return;
     startTransition(async () => {
-      await setCalendarLeave({
-        dateStr: selectedDate,
-        endDateStr: endDate,
+      await setFirebaseCalendarLeave({
+        date: selectedDate,
+        endDate,
         staffId,
         leaveType,
         duration,
@@ -127,7 +129,7 @@ export function CalendarRosterClient({
       return;
     }
     startTransition(async () => {
-      await generateMonthlyAutoSchedule(monthStr);
+      await generateFirebaseMonthlyRoster(monthStr);
       router.refresh();
     });
   };
@@ -152,7 +154,10 @@ export function CalendarRosterClient({
             <input
               type="month"
               value={monthStr}
-              onChange={(e) => router.push(`/calendar?month=${e.target.value}`)}
+              onChange={(e) => {
+                onMonthChange?.(e.target.value);
+                router.push(`/calendar?month=${e.target.value}`);
+              }}
               className="input-base"
             />
           </label>

@@ -1,0 +1,14 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+    "staff": {
+      ".indexOn": ["role", "active"]
+    },
+    "assignments": {
+      "$date": {
+        ".indexOn": ["slot", "assistantId", "status", "createdAt"]
+      }
+    }
+  }
+}

@@ -1,14 +1,15 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { updateAssignmentNote } from "@/app/actions/mutations";
+import { updateAssignment } from "@/lib/firebase-data";
 
 interface Props {
   assignmentId: string;
+  date: string;
   initial: string | null;
 }
 
-export function TaskNoteField({ assignmentId, initial }: Props) {
+export function TaskNoteField({ assignmentId, date, initial }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [value, setValue] = useState(initial ?? "");
   const [savedValue, setSavedValue] = useState(initial ?? "");
@@ -25,7 +26,7 @@ export function TaskNoteField({ assignmentId, initial }: Props) {
     const current = e.target.value;
     if (current !== savedValue) {
       startTransition(async () => {
-        await updateAssignmentNote({ assignmentId, note: current });
+        await updateAssignment(date, assignmentId, { note: current.trim() || null });
         setSavedValue(current);
         setJustSaved(true);
         setTimeout(() => setJustSaved(false), 1500);
