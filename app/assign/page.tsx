@@ -17,6 +17,10 @@ import {
   listenToFirebaseS1,
   updateFirebaseS1Content,
 } from "@/lib/firebase-s1";
+import {
+  getCachedFirebaseAttendancePage,
+  listenToFirebaseAttendancePage,
+} from "@/lib/firebase-attendance";
 import { generateFirebaseAutoSchedule, getFirebasePcaState } from "@/lib/firebase-pca";
 
 type Mode = "S1" | "PCA";
@@ -138,6 +142,21 @@ interface S1AssignmentPoolRow {
   currentWards: string[];
 }
 
+function assistantLeaveLabels(
+  assistants: NonNullable<ReturnType<typeof getCachedFirebaseAttendancePage>>["assistants"]
+) {
+  return assistants.flatMap((assistant) => {
+    if (assistant.todayStatus === "PRESENT") return [];
+    if (assistant.todayStatus === "PM_ONLY") return [`${assistant.name} (AM)`];
+    if (assistant.todayStatus === "AM_ONLY") return [`${assistant.name} (PM)`];
+    if (assistant.todayStatus === "OTHER") {
+      const slots = assistant.unavailableSlots ?? [];
+      return slots.length > 0 ? [`${assistant.name} (${slots.join(", ")})`] : [assistant.name];
+    }
+    return [assistant.name];
+  });
+}
+
 export default function AssignPage() {
   return (
     <Suspense fallback={<AssignPageSkeleton />}>
@@ -154,6 +173,9 @@ function AssignPageContent() {
 
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [s1AssignmentPool, setS1AssignmentPool] = useState<S1AssignmentPoolRow[]>([]);
+  const [assistantLeaveStatus, setAssistantLeaveStatus] = useState<string[]>(() =>
+    assistantLeaveLabels(getCachedFirebaseAttendancePage(dateStr)?.assistants ?? [])
+  );
   const [lateAssigneeByTask, setLateAssigneeByTask] = useState<Record<string, string>>({});
   const [quotas, setQuotas] = useState<{
     am: TeamPoolQuota[];
@@ -239,8 +261,7 @@ function AssignPageContent() {
     });
   };
 
-  // All therapists share the same server-side task pool. Poll while visible so
-  // another therapist's submissions and assignments appear without a reload.
+  // All therapists share the same Firebase task pool.
   const refreshS1Data = async () => {
     const [list, pool] = await Promise.all([
       getFirebaseS1Tasks(dateStr),
@@ -275,6 +296,20 @@ function AssignPageContent() {
     return () => {
       unsubscribe();
     };
+  }, [dateStr, isS1, pending]);
+
+  useEffect(() => {
+    if (!isS1) return;
+    const cached = getCachedFirebaseAttendancePage(dateStr);
+    setAssistantLeaveStatus(assistantLeaveLabels(cached?.assistants ?? []));
+    return listenToFirebaseAttendancePage(
+      dateStr,
+      ({ assistants }) => {
+        setAssistantLeaveStatus(assistantLeaveLabels(assistants));
+        if (!pending) void refreshS1Data();
+      },
+      (error) => setTaskError(error.message)
+    );
   }, [dateStr, isS1, pending]);
 
   useEffect(() => {
@@ -419,9 +454,8 @@ function AssignPageContent() {
       >
         {isS1 ? (
           <>
-            <strong>S1 Task Mode</strong>: The automatic batch balances specialty, ward location,
-            and each assistant&apos;s S1 points up to a soft 10-point ceiling. After 8:45am, choose
-            an assistant directly on each pending task.
+            <strong>Assistance leave status:</strong>{" "}
+            {assistantLeaveStatus.length > 0 ? assistantLeaveStatus.join(", ") : "None"}
           </>
         ) : (
           <strong>PCA Auto Distribution</strong>
