@@ -1,20 +1,23 @@
 "use client";
 
-import { get, ref, update } from "firebase/database";
+import { get, onValue, ref, update, type Unsubscribe } from "firebase/database";
 import { ensureAnonymousAuth, firebaseDb } from "./firebase";
-import { readStaff, setDailyAttendance, updateStaff, type FirebaseAttendance } from "./firebase-data";
+import {
+  ensureFirebasePrototypeSeed,
+  readStaff,
+  updateStaff,
+  type FirebaseAttendance,
+  type FirebaseStaff,
+} from "./firebase-data";
 import { AttendanceStatus, TEAM_ORDER, type SlotCode, type TeamCode } from "@/types/db-enums";
 import { parseUnavailableSlots } from "./attendance";
 
-export async function getFirebaseDailyAttendance(date: string) {
-  await ensureAnonymousAuth();
-  const [staff, attendanceSnapshot] = await Promise.all([
-    readStaff(),
-    get(ref(firebaseDb, `attendance/${date}`)),
-  ]);
-  const records = (attendanceSnapshot.val() ?? {}) as Record<string, FirebaseAttendance>;
+function dailyAttendanceRows(
+  staff: FirebaseStaff[],
+  records: Record<string, FirebaseAttendance>
+) {
   return staff
-    .filter((member) => member.role === "ASSISTANT")
+    .filter((member) => member.active !== false && member.role === "ASSISTANT")
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((member) => ({
       id: member.id,
@@ -26,11 +29,107 @@ export async function getFirebaseDailyAttendance(date: string) {
     }));
 }
 
+function teamWeights(rows: Record<string, { weight?: number }>): Record<TeamCode, number> {
+  return Object.fromEntries(
+    TEAM_ORDER.map((team) => [team, rows[team]?.weight ?? 0])
+  ) as Record<TeamCode, number>;
+}
+
+type DailyAttendanceRows = ReturnType<typeof dailyAttendanceRows>;
+type AttendancePageData = {
+  assistants: DailyAttendanceRows;
+  weights: Record<TeamCode, number>;
+};
+
+const attendancePageCache = new Map<string, AttendancePageData>();
+
+export function getCachedFirebaseAttendancePage(date: string) {
+  return attendancePageCache.get(date) ?? null;
+}
+
+export async function preloadFirebaseAttendancePage(date: string) {
+  if (attendancePageCache.has(date)) return;
+  const [assistants, weights] = await Promise.all([
+    getFirebaseDailyAttendance(date),
+    getFirebaseTeamWeights(),
+  ]);
+  attendancePageCache.set(date, { assistants, weights });
+}
+
+export function listenToFirebaseAttendancePage(
+  date: string,
+  onChange: (data: AttendancePageData) => void,
+  onError?: (error: Error) => void
+): Unsubscribe {
+  let cancelled = false;
+  let staff: FirebaseStaff[] | null = null;
+  let attendance: Record<string, FirebaseAttendance> | null = null;
+  let weights: Record<TeamCode, number> | null = null;
+  const unsubscribes: Unsubscribe[] = [];
+
+  const emit = () => {
+    if (cancelled || !staff || !attendance || !weights) return;
+    const data = { assistants: dailyAttendanceRows(staff, attendance), weights };
+    attendancePageCache.set(date, data);
+    onChange(data);
+  };
+
+  void ensureFirebasePrototypeSeed()
+    .then(() => {
+      if (cancelled) return;
+      unsubscribes.push(
+        onValue(
+          ref(firebaseDb, "staff"),
+          (snapshot) => {
+            const rows = (snapshot.val() ?? {}) as Record<string, FirebaseStaff>;
+            staff = Object.entries(rows).map(([id, row]) => ({ ...row, id }));
+            emit();
+          },
+          (error) => onError?.(error)
+        ),
+        onValue(
+          ref(firebaseDb, `attendance/${date}`),
+          (snapshot) => {
+            attendance = (snapshot.val() ?? {}) as Record<string, FirebaseAttendance>;
+            emit();
+          },
+          (error) => onError?.(error)
+        ),
+        onValue(
+          ref(firebaseDb, "teams"),
+          (snapshot) => {
+            weights = teamWeights(snapshot.val() ?? {});
+            emit();
+          },
+          (error) => onError?.(error)
+        )
+      );
+    })
+    .catch((error: unknown) =>
+      onError?.(error instanceof Error ? error : new Error("Firebase connection failed"))
+    );
+
+  return () => {
+    cancelled = true;
+    unsubscribes.forEach((unsubscribe) => unsubscribe());
+  };
+}
+
+export async function getFirebaseDailyAttendance(date: string) {
+  await ensureAnonymousAuth();
+  const [staff, attendanceSnapshot] = await Promise.all([
+    readStaff(),
+    get(ref(firebaseDb, `attendance/${date}`)),
+  ]);
+  const records = (attendanceSnapshot.val() ?? {}) as Record<string, FirebaseAttendance>;
+  return dailyAttendanceRows(staff, records);
+}
+
 export async function getFirebaseTeamWeights(): Promise<Record<TeamCode, number>> {
   await ensureAnonymousAuth();
   const snapshot = await get(ref(firebaseDb, "teams"));
   const rows = (snapshot.val() ?? {}) as Record<string, { weight?: number }>;
-  return Object.fromEntries(TEAM_ORDER.map((team) => [team, rows[team]?.weight ?? 0])) as Record<TeamCode, number>;
+  return teamWeights(rows);
 }
 
 export async function setFirebaseAttendanceBatch(args: {

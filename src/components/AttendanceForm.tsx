@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   setFirebaseAttendanceBatch,
@@ -71,6 +71,8 @@ export function AttendanceForm({
   );
 
   const [weights, setWeights] = useState<Record<TeamCode, number>>(initialWeights);
+  const previousAssistants = useRef(initialAssistants);
+  const previousWeights = useRef(initialWeights);
   const weightsDirty = TEAM_ORDER.some((t) => weights[t] !== initialWeights[t]);
   const totalWeight = TEAM_ORDER.reduce((sum, t) => sum + (weights[t] || 0), 0);
 
@@ -80,6 +82,41 @@ export function AttendanceForm({
 
   const [editId, setEditId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+
+  useEffect(() => {
+    const before = new Map(previousAssistants.current.map((assistant) => [assistant.id, assistant]));
+    setDraft((current) =>
+      Object.fromEntries(
+        initialAssistants.map((assistant) => {
+          const previous = before.get(assistant.id);
+          const locallyEdited = previous && current[assistant.id] !== previous.todayStatus;
+          return [assistant.id, locallyEdited ? current[assistant.id] : assistant.todayStatus];
+        })
+      )
+    );
+    setUnavailableDraft((current) =>
+      Object.fromEntries(
+        initialAssistants.map((assistant) => {
+          const previous = before.get(assistant.id);
+          const currentSlots = current[assistant.id] ?? [];
+          const previousSlots = previous?.unavailableSlots ?? [];
+          const locallyEdited = previous && currentSlots.join(",") !== previousSlots.join(",");
+          return [assistant.id, locallyEdited ? currentSlots : assistant.unavailableSlots ?? []];
+        })
+      )
+    );
+    previousAssistants.current = initialAssistants;
+  }, [initialAssistants]);
+
+  useEffect(() => {
+    setWeights((current) => {
+      const locallyEdited = TEAM_ORDER.some(
+        (team) => current[team] !== previousWeights.current[team]
+      );
+      return locallyEdited ? current : initialWeights;
+    });
+    previousWeights.current = initialWeights;
+  }, [initialWeights]);
 
   const dirtyAttendanceCount = useMemo(() => {
     return initialAssistants.filter((a) => {
@@ -104,14 +141,12 @@ export function AttendanceForm({
         unavailableSlots: status === "OTHER" ? unavailableDraft[staffId] ?? [] : [],
       }));
       await setFirebaseAttendanceBatch({ date: dateStr, updates });
-      router.refresh();
     });
   };
 
   const handleSaveWeights = () => {
     startTransition(async () => {
       await updateFirebaseTeamWeights(weights);
-      router.refresh();
     });
   };
 
@@ -120,7 +155,6 @@ export function AttendanceForm({
     startTransition(async () => {
       await addFirebaseAssistant({ name: newName.trim(), teamCode: newTeam, defaultStatus: newDefault });
       setNewName("");
-      router.refresh();
     });
   };
 
@@ -129,7 +163,6 @@ export function AttendanceForm({
     startTransition(async () => {
       await updateFirebaseAssistant({ id, name: editName.trim() });
       setEditId(null);
-      router.refresh();
     });
   };
 
@@ -143,21 +176,18 @@ export function AttendanceForm({
     }
     startTransition(async () => {
       await deactivateFirebaseAssistant(id);
-      router.refresh();
     });
   };
 
   const handleTeamChange = (id: string, code: TeamCode) => {
     startTransition(async () => {
       await updateFirebaseAssistant({ id, teamCode: code });
-      router.refresh();
     });
   };
 
   const handleDefaultStatusChange = (id: string, status: AttendanceStatus) => {
     startTransition(async () => {
       await updateFirebaseAssistant({ id, defaultStatus: status });
-      router.refresh();
     });
   };
 

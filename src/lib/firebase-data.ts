@@ -108,6 +108,8 @@ const placeholderAssistantNames: Record<string, string> = {
   a007: "Grace",
 };
 
+let prototypeSeedPromise: Promise<boolean> | null = null;
+
 function staffRecord(person: SeedPerson): FirebaseStaff {
   const [staffNo, name, role, team, canManageAttendance, defaultStatus, active = true] = person;
   return {
@@ -220,6 +222,14 @@ export async function updateStaff(staffId: string, changes: Partial<FirebaseStaf
 
 /** Seed an empty database, then apply each non-destructive data migration once. */
 export async function ensureFirebasePrototypeSeed() {
+  prototypeSeedPromise ??= applyFirebasePrototypeSeed().catch((error) => {
+    prototypeSeedPromise = null;
+    throw error;
+  });
+  return prototypeSeedPromise;
+}
+
+async function applyFirebasePrototypeSeed() {
   await ensureAnonymousAuth();
   const [staffSnapshot, migrationSnapshot] = await Promise.all([
     get(ref(firebaseDb, path.staff)),

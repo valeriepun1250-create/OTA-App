@@ -120,7 +120,6 @@ export function CalendarRosterClient({
         duration,
         unavailableSlots: duration === "CUSTOM" ? slots : undefined,
       });
-      router.refresh();
     });
   };
 
@@ -130,7 +129,6 @@ export function CalendarRosterClient({
     }
     startTransition(async () => {
       await generateFirebaseMonthlyRoster(monthStr);
-      router.refresh();
     });
   };
 

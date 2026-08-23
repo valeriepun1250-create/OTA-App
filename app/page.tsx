@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect } from "react";
+import { getTodayInHongKong } from "@/lib/date";
 
 const ENTRY_POINTS = [
   {
@@ -32,6 +36,20 @@ const ENTRY_POINTS = [
 ];
 
 export default function Home() {
+  useEffect(() => {
+    const today = getTodayInHongKong();
+    void Promise.all([
+      import("@/lib/firebase-attendance").then((module) =>
+        module.preloadFirebaseAttendancePage(today)
+      ),
+      import("@/lib/firebase-calendar").then((module) =>
+        module.getFirebaseCalendarMonth(today.slice(0, 7))
+      ),
+    ]).catch(() => {
+      // Destination pages display actionable Firebase errors if preloading fails.
+    });
+  }, []);
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-4 py-10 sm:px-8 md:min-h-[100svh] md:py-14 lg:px-10">
       <div className="w-full">
