@@ -420,8 +420,8 @@ function AssignPageContent() {
       </header>
 
       <section className="panel">
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="block">
+        <div className="flex flex-wrap gap-4">
+          <label className="block min-w-[180px] flex-[1_1_180px]">
             <span className="text-sm font-semibold">Date</span>
             <input
               type="date"
@@ -430,7 +430,7 @@ function AssignPageContent() {
               className="input-base"
             />
           </label>
-          <label className="block">
+          <label className="block min-w-[260px] flex-[1_1_260px]">
             <span className="text-sm font-semibold">Mode</span>
             <select
               value={mode}
