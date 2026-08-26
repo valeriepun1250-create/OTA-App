@@ -17,6 +17,11 @@ import { isAvailableForSlot, SLOT_TO_POOL } from "./attendance";
 import { AttendanceStatus, Role, type S1Specialty } from "@/types/db-enums";
 
 const sevenDays = 7 * 24 * 60 * 60 * 1000;
+const RELIEVING_ASSISTANT_NAME = "medical relieving";
+
+function isRelievingAssistant(name: string) {
+  return name.trim().toLowerCase() === RELIEVING_ASSISTANT_NAME;
+}
 
 function todayParts() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -97,6 +102,7 @@ export async function getFirebaseS1Pool(date: string) {
         id: member.id,
         name: member.name,
         team: member.team,
+        isRelieving: isRelievingAssistant(member.name),
         currentPoints: own.reduce((sum, row) => sum + (row.score ?? 1), 0),
         currentWards: own.map((row) => row.ward),
       };
@@ -177,7 +183,13 @@ export async function dispatchFirebaseS1Tasks(date: string) {
   }));
   const plan = dispatchTasksByLocation(
     pending,
-    pool.map((member) => ({ id: member.id, currentWards: member.currentWards, currentScore: member.currentPoints, homeTeam: member.team }))
+    pool.map((member) => ({
+      id: member.id,
+      currentWards: member.currentWards,
+      currentScore: member.currentPoints,
+      homeTeam: member.team,
+      isRelieving: member.isRelieving,
+    }))
   );
   let dispatched = 0;
   for (const item of plan) {

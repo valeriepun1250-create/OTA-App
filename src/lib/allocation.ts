@@ -282,6 +282,8 @@ export interface DispatchCandidate {
   currentWards: string[];
   currentScore: number;
   homeTeam?: TeamCode | null;
+  /** Standby dummy used only after every regular assistant reaches the S1 ceiling. */
+  isRelieving?: boolean;
 }
 
 /** Normalize a ward to its ward group (room + floor), ignoring bed suffixes. */
@@ -311,16 +313,24 @@ export function dispatchTasksByLocation(
   for (const task of sorted) {
     let target: ParsedWard | null = null;
     try { target = parseWard(task.ward); } catch { /* unparseable → all tier 4 */ }
-    const preferredTeam = S1_SPECIALTY_TEAM[task.specialty as S1Specialty];
-    const hasPreferredTeamOnDuty = preferredTeam
-      ? candidates.some((c) => c.homeTeam === preferredTeam)
-      : false;
+
+    const regularCandidates = candidates.filter((candidate) => !candidate.isRelieving);
+    const allRegularAtCeiling =
+      regularCandidates.length === 0 ||
+      regularCandidates.every((candidate) => score.get(candidate.id)! >= S1_MAX_POINTS);
+    const priorityPool = allRegularAtCeiling ? candidates : regularCandidates;
 
     // Keep each assistant at or below the soft ceiling whenever that is
     // possible. If every candidate would exceed it, fall back to the normal
     // specialty → location → accumulated-score ordering so tasks never stall.
-    const withinPointLimit = candidates.filter((c) => score.get(c.id)! + task.score <= S1_MAX_POINTS);
-    const pool = withinPointLimit.length > 0 ? withinPointLimit : candidates;
+    const withinPointLimit = priorityPool.filter(
+      (candidate) => score.get(candidate.id)! + task.score <= S1_MAX_POINTS
+    );
+    const pool = withinPointLimit.length > 0 ? withinPointLimit : priorityPool;
+    const preferredTeam = S1_SPECIALTY_TEAM[task.specialty as S1Specialty];
+    const hasPreferredTeamOnDuty = preferredTeam
+      ? pool.some((candidate) => candidate.homeTeam === preferredTeam)
+      : false;
 
     const ranked = pool
       .map((c) => {

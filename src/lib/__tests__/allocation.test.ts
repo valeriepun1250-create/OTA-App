@@ -717,6 +717,58 @@ describe("dispatchTasksByLocation", () => {
     expect(result[0].assistantId).toBe("nine");
   });
 
+  it("keeps the relieving assistant on standby while any regular assistant is below 10", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "E8/1", score: 1, specialty: "Medical" }],
+      [
+        { id: "regular", homeTeam: "NS", currentWards: ["3A"], currentScore: 9 },
+        {
+          id: "medical-relieving",
+          homeTeam: "MEDICAL",
+          currentWards: ["E8/2"],
+          currentScore: 0,
+          isRelieving: true,
+        },
+      ]
+    );
+    expect(result[0].assistantId).toBe("regular");
+  });
+
+  it("uses the relieving assistant after every regular assistant reaches 10", () => {
+    const result = dispatchTasksByLocation(
+      [{ id: "t1", ward: "E8/1", score: 1, specialty: "Medical" }],
+      [
+        { id: "regular-1", homeTeam: "NS", currentWards: ["E8/3"], currentScore: 10 },
+        { id: "regular-2", homeTeam: "STROKE", currentWards: ["E8/4"], currentScore: 10 },
+        {
+          id: "medical-relieving",
+          homeTeam: "MEDICAL",
+          currentWards: [],
+          currentScore: 0,
+          isRelieving: true,
+        },
+      ]
+    );
+    expect(result[0].assistantId).toBe("medical-relieving");
+  });
+
+  it("keeps assigning regular assistants until all of them reach the ceiling", () => {
+    const result = dispatchTasksByLocation(
+      [
+        { id: "t1", ward: "3A", score: 1 },
+        { id: "t2", ward: "8E", score: 1 },
+        { id: "t3", ward: "3B", score: 1 },
+      ],
+      [
+        { id: "regular-1", currentWards: [], currentScore: 9 },
+        { id: "regular-2", currentWards: [], currentScore: 9 },
+        { id: "medical-relieving", currentWards: [], currentScore: 0, isRelieving: true },
+      ]
+    );
+    expect(result.slice(0, 2).every((row) => row.assistantId !== "medical-relieving")).toBe(true);
+    expect(result[2].assistantId).toBe("medical-relieving");
+  });
+
   it("high-score tasks dispatched first → same tier scores are balanced (different wards)", () => {
     // 4 tasks in 4 different cluster 1 wards; 2 assistants with no existing tasks → all CROSS_CLUSTER tier
     // High score first: MoCA(2) → a1, AMT(1) → a2, AMT(1) → a2 (a2 now=1, a1=2, but next task a2 still lower tier)

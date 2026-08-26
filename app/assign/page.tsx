@@ -138,6 +138,7 @@ interface S1AssignmentPoolRow {
   id: string;
   name: string;
   team: TeamCode | null;
+  isRelieving: boolean;
   currentPoints: number;
   currentWards: string[];
 }
@@ -242,6 +243,7 @@ function AssignPageContent() {
         homeTeam: assistant.team,
         currentScore: assistant.currentPoints,
         currentWards: assistant.currentWards,
+        isRelieving: assistant.isRelieving,
       }))
     );
     return Object.fromEntries(plan.map((item) => [item.taskId, item.assistantId]));
